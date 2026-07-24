@@ -2,7 +2,7 @@ name: Release
 
 # Cut a release by pushing a version tag:
 #   git tag v2.0.1 && git push origin v2.0.1
-# Builds a signed + notarized .dmg (macOS runner) and a .deb (Ubuntu runner),
+# Builds a signed + notarized .dmg (macOS runner), a .deb (Ubuntu runner), and an .msi (Windows runner),
 # renames them to the stable names the website links to, and publishes the GitHub Release.
 # Requires the repository secrets documented in RELEASING.md.
 
@@ -73,9 +73,36 @@ jobs:
           name: deb
           path: RelayPony-linux.deb
 
+  windows:
+    name: msi (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Ensure WiX Toolset 3.x (jpackage needs candle.exe/light.exe)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset -y --no-progress
+            $wix = Get-ChildItem 'C:\Program Files (x86)' -Filter 'WiX Toolset v3*' -Directory | Select-Object -Last 1
+            if ($wix) { Join-Path $wix.FullName 'bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8 }
+          }
+      - name: Build msi
+        shell: pwsh
+        run: |
+          ./gradlew.bat packageMsi
+          Copy-Item build/compose/binaries/main/msi/RelayPony-*.msi RelayPony-windows.msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msi
+          path: RelayPony-windows.msi
+
   release:
     name: Publish GitHub Release
-    needs: [macos, linux]
+    needs: [macos, linux, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -90,6 +117,7 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             artifacts/dmg/RelayPony-macOS.dmg \
             artifacts/deb/RelayPony-linux.deb \
+            artifacts/msi/RelayPony-windows.msi \
             --repo "${{ github.repository }}" \
             --title "RelayPony Desktop ${{ github.ref_name }}" \
             --generate-notes

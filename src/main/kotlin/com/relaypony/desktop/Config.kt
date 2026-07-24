@@ -2,13 +2,21 @@ package com.relaypony.desktop
 
 import java.io.File
 
-/** Where the desktop CLI keeps its identity/trust, and where received files land. Follows XDG on
- *  Linux (and works fine on macOS/Windows). Override the device name with RELAYPONY_NAME. */
+/** Where the desktop CLI keeps its identity/trust, and where received files land. Uses %APPDATA% on
+ *  Windows and XDG (~/.config) on Linux/macOS. Override the device name with RELAYPONY_NAME. */
 object Config {
 
     val configDir: File = run {
-        val xdg = System.getenv("XDG_CONFIG_HOME")
-        val base = if (!xdg.isNullOrBlank()) File(xdg) else File(System.getProperty("user.home"), ".config")
+        val os = System.getProperty("os.name").orEmpty().lowercase()
+        val base = if (os.contains("win")) {
+            // Windows convention: %APPDATA%\relaypony (roaming profile), e.g. C:\Users\me\AppData\Roaming.
+            System.getenv("APPDATA")?.takeIf { it.isNotBlank() }?.let { File(it) }
+                ?: File(System.getProperty("user.home"), "AppData\\Roaming")
+        } else {
+            // XDG on Linux; macOS has no XDG by default and falls through to ~/.config, which is fine there.
+            System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() }?.let { File(it) }
+                ?: File(System.getProperty("user.home"), ".config")
+        }
         File(base, "relaypony").apply { mkdirs() }
     }
 

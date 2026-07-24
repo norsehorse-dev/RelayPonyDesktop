@@ -1,27 +1,27 @@
 # Releasing RelayPony Desktop
 
-Each release ships two installers: a signed + notarized **`.dmg`** (macOS) and a **`.deb`** (Linux).
-`jpackage` only builds for the OS it runs on, so the `.dmg` is built on macOS and the `.deb` on
-Linux — or both automatically via CI (Option A).
+Each release ships three installers: a signed + notarized **`.dmg`** (macOS), a **`.deb`** (Linux),
+and an **`.msi`** (Windows). `jpackage` only builds for the OS it runs on, so each installer is built
+on its own platform — or all three automatically via CI (Option A).
 
-The website (relaypony.app/desktop.php) links to the **stable asset names** `RelayPony-macOS.dmg`
-and `RelayPony-linux.deb` through `/releases/latest/download/…`, so every release must attach its
-assets under exactly those names.
+The website (relaypony.app/desktop.php) links to the **stable asset names** `RelayPony-macOS.dmg`,
+`RelayPony-linux.deb`, and `RelayPony-windows.msi` through `/releases/latest/download/…`, so every
+release must attach its assets under exactly those names.
 
 Bump `packageVersion` in `build.gradle.kts` before tagging a new version.
 
 ## Option A — CI (recommended)
 
-Push a version tag; GitHub Actions builds and publishes both installers:
+Push a version tag; GitHub Actions builds and publishes all three installers:
 
 ```sh
 git tag v2.0.1
 git push origin v2.0.1
 ```
 
-`.github/workflows/release.yml` builds the signed+notarized `.dmg` on a macOS runner and the `.deb`
-on an Ubuntu runner, renames them to the stable names, and creates the GitHub Release. Configure
-these repository **secrets** first (Settings → Secrets and variables → Actions):
+`.github/workflows/release.yml` builds the signed+notarized `.dmg` on a macOS runner, the `.deb` on
+an Ubuntu runner, and the `.msi` on a Windows runner, renames them to the stable names, and creates
+the GitHub Release. Configure these repository **secrets** first (Settings → Secrets and variables → Actions):
 
 | Secret | What it is |
 | --- | --- |
@@ -69,11 +69,25 @@ sudo apt install -y openjdk-17-jdk fakeroot
 ./gradlew packageDeb
 ```
 
+### Windows (`.msi`), on a Windows host
+
+Install a JDK 17 and **WiX Toolset 3.x** — jpackage shells out to WiX's `candle.exe`/`light.exe`, and
+WiX 4/5 will not work. `choco install wixtoolset` gets 3.14. Then, at the repo root:
+
+```bat
+gradlew.bat packageMsi
+```
+
+The unsigned installer lands at `build\compose\binaries\main\msi\RelayPony-2.0.0.msi`. It is not
+code-signed, so Windows SmartScreen warns on first run — users click **More info -> Run anyway**.
+Signing would require a separate Windows code-signing certificate.
+
 ### Publish
 
 ```sh
 cp build/compose/binaries/main/dmg/RelayPony-*.dmg RelayPony-macOS.dmg
 cp path/to/relaypony_*_amd64.deb RelayPony-linux.deb
-gh release create v2.0.1 RelayPony-macOS.dmg RelayPony-linux.deb \
+cp path/to/RelayPony-*.msi RelayPony-windows.msi
+gh release create v2.0.1 RelayPony-macOS.dmg RelayPony-linux.deb RelayPony-windows.msi \
   --repo norsehorse-dev/RelayPonyDesktop --title "RelayPony Desktop 2.0.1" --generate-notes
 ```

@@ -47,12 +47,12 @@ dependencies {
 }
 
 // One binary, two faces: no args opens the GUI (`./gradlew run`), args run the CLI (send/receive/…).
-// Native installers: `./gradlew packageDmg` / `notarizeDmg` (macOS) / `packageDeb` (Linux).
+// Native installers: `./gradlew packageDmg` / `notarizeDmg` (macOS) / `packageDeb` (Linux), `packageMsi` (Windows).
 compose.desktop {
     application {
         mainClass = "com.relaypony.desktop.MainKt"
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Deb)
+            targetFormats(TargetFormat.Dmg, TargetFormat.Deb, TargetFormat.Msi)
             packageName = "RelayPony"
             packageVersion = "2.0.0"
             description = "Encrypted, direct device-to-device file transfer"
@@ -75,6 +75,15 @@ compose.desktop {
             linux {
                 iconFile.set(project.file("packaging/relaypony.png"))
                 packageName = "relaypony"                              // lowercase for the .deb package id
+            }
+            windows {
+                iconFile.set(project.file("packaging/relaypony.ico"))
+                menu = true                                            // Start-menu entry…
+                menuGroup = "RelayPony"                                // …grouped under RelayPony
+                shortcut = true                                        // and a desktop shortcut
+                dirChooser = true                                      // let the user choose the install dir
+                // Fixed identity so each new .msi upgrades the previous install in place.
+                upgradeUuid = "caae62d9-7cda-4fac-b915-4a407c459e1a"
             }
         }
     }

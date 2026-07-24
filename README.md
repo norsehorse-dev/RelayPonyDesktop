@@ -1,5 +1,10 @@
 # RelayPony Desktop
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-1f9cf0.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/norsehorse-dev/RelayPonyDesktop?color=1f9cf0)](https://github.com/norsehorse-dev/RelayPonyDesktop/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/norsehorse-dev/RelayPonyDesktop/total?color=1f9cf0)](https://github.com/norsehorse-dev/RelayPonyDesktop/releases)
+![Platform](https://img.shields.io/badge/platform-macOS_%7C_Linux-1f9cf0)
+
 Encrypted, direct device-to-device file transfer for **macOS, Linux, and Windows** — the desktop
 member of the [RelayPony](https://relaypony.app) family.
 

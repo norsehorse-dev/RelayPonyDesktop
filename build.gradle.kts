@@ -11,10 +11,18 @@ kotlin {
     jvmToolchain(17)
 }
 
+// --- macOS signing + notarization, opt-in via environment (nothing secret is committed) ---
+// Set MACOS_SIGN_IDENTITY plus the three NOTARIZATION_* vars, then `./gradlew notarizeDmg` builds a
+// signed, stapled, Gatekeeper-clean .dmg. With them unset (contributors, CI, the Linux .deb),
+// `packageDmg` builds an unsigned .dmg exactly as before.
+val macSignIdentity: String? = System.getenv("MACOS_SIGN_IDENTITY")
+val notaryAppleId = providers.environmentVariable("NOTARIZATION_APPLE_ID")
+val notaryPassword = providers.environmentVariable("NOTARIZATION_PASSWORD")
+val notaryTeamId = providers.environmentVariable("NOTARIZATION_TEAM_ID")
+
 // RelayPony Desktop is not a rewrite: it compiles the exact wire/session/crypto code the Android
-// app ships, plus the age core from AgePony. Those sources are vendored under vendor/ (Apache-2.0,
-// from the RelayPonyAndroid and AgePonyAndroid repos). Only src/main/kotlin/com/relaypony/desktop
-// is desktop-specific. NsdDiscovery is the one Android-only file (excluded; desktop uses jmdns).
+// app ships, plus the age core from AgePony. Those sources are vendored under vendor/ (Apache-2.0).
+// Only src/main/kotlin/com/relaypony/desktop is desktop-specific. NsdDiscovery is Android-only.
 sourceSets {
     main {
         kotlin {
@@ -39,7 +47,7 @@ dependencies {
 }
 
 // One binary, two faces: no args opens the GUI (`./gradlew run`), args run the CLI (send/receive/…).
-// Native installers: `./gradlew packageDmg` (macOS) / `packageDeb` (Linux) / `packageDistributionForCurrentOS`.
+// Native installers: `./gradlew packageDmg` / `notarizeDmg` (macOS) / `packageDeb` (Linux).
 compose.desktop {
     application {
         mainClass = "com.relaypony.desktop.MainKt"
@@ -53,10 +61,20 @@ compose.desktop {
             macOS {
                 iconFile.set(project.file("packaging/relaypony.icns"))
                 bundleID = "app.relaypony.desktop"
+                if (!macSignIdentity.isNullOrBlank()) {
+                    signing {
+                        sign.set(true)
+                        identity.set(macSignIdentity)
+                    }
+                    notarization {
+                        appleID.set(notaryAppleId)
+                        password.set(notaryPassword)
+                    }
+                }
             }
             linux {
                 iconFile.set(project.file("packaging/relaypony.png"))
-                packageName = "relaypony"
+                packageName = "relaypony"                              // lowercase for the .deb package id
             }
         }
     }

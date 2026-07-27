@@ -5,3 +5,13 @@ build/
 *.iml
 .DS_Store
 local.properties
+
+# Release artifacts and downloaded CI outputs (never commit binaries)
+/ci-artifacts/
+/*.AppDir/
+/appimagetool-*.AppImage
+/RelayPony-*.dmg
+/RelayPony-*.deb
+/RelayPony-*.msi
+/RelayPony-*.tar.gz
+/RelayPony-*.AppImage

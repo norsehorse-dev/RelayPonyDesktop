@@ -1,12 +1,14 @@
 # Releasing RelayPony Desktop
 
-Each release ships three installers: a signed + notarized **`.dmg`** (macOS), a **`.deb`** (Linux),
-and an **`.msi`** (Windows). `jpackage` only builds for the OS it runs on, so each installer is built
-on its own platform — or all three automatically via CI (Option A).
+Each release ships installers for every platform: a signed + notarized **`.dmg`** (macOS); a **`.deb`**,
+a portable **`.tar.gz`**, and an **`.AppImage`** (Linux); and an **`.msi`** (Windows). `jpackage` only
+builds for the OS it runs on, so each is built on its own platform — all of them automatically via CI
+(Option A). An AUR package (`relaypony-bin`) tracks the Linux tarball; see below.
 
 The website (relaypony.app/desktop.php) links to the **stable asset names** `RelayPony-macOS.dmg`,
-`RelayPony-linux.deb`, and `RelayPony-windows.msi` through `/releases/latest/download/…`, so every
-release must attach its assets under exactly those names.
+`RelayPony-linux.deb`, `RelayPony-linux-x86_64.tar.gz`, `RelayPony-x86_64.AppImage`, and
+`RelayPony-windows.msi` through `/releases/latest/download/…`, so every release must attach its assets
+under exactly those names.
 
 Bump `packageVersion` in `build.gradle.kts` before tagging a new version.
 
@@ -19,9 +21,9 @@ git tag v2.0.1
 git push origin v2.0.1
 ```
 
-`.github/workflows/release.yml` builds the signed+notarized `.dmg` on a macOS runner, the `.deb` on
-an Ubuntu runner, and the `.msi` on a Windows runner, renames them to the stable names, and creates
-the GitHub Release. Configure these repository **secrets** first (Settings → Secrets and variables → Actions):
+`.github/workflows/release.yml` builds the signed+notarized `.dmg` on a macOS runner, the `.deb`,
+portable `.tar.gz`, and `.AppImage` on an Ubuntu runner, and the `.msi` on a Windows runner, renames
+them to the stable names, and creates the GitHub Release. Configure these repository **secrets** first (Settings → Secrets and variables → Actions):
 
 | Secret | What it is |
 | --- | --- |
@@ -62,12 +64,33 @@ Gotchas learned the hard way:
 - The team ID goes through `-Pcompose.desktop.mac.notarization.teamID=…`; the DSL `teamId` property
   does not exist in Compose 1.11.1.
 
-### Linux (`.deb`), on a Linux host
+### Linux (`.deb`, `.tar.gz`, `.AppImage`), on a Linux host
 
 ```sh
-sudo apt install -y openjdk-17-jdk fakeroot
-./gradlew packageDeb
+sudo apt install -y openjdk-17-jdk fakeroot desktop-file-utils
+./gradlew packageDeb createDistributable
+tar -czf RelayPony-linux-x86_64.tar.gz -C build/compose/binaries/main/app RelayPony
 ```
+
+For the AppImage, assemble an AppDir from that app image and run `appimagetool`:
+
+```sh
+APPDIR=RelayPony.AppDir
+rm -rf "$APPDIR"; mkdir -p "$APPDIR"
+cp -r build/compose/binaries/main/app/RelayPony/* "$APPDIR/"
+cp packaging/appimage/AppRun "$APPDIR/AppRun"; chmod +x "$APPDIR/AppRun"
+cp packaging/appimage/relaypony.desktop "$APPDIR/relaypony.desktop"
+cp packaging/relaypony.png "$APPDIR/relaypony.png"
+wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+chmod +x appimagetool-x86_64.AppImage
+ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run "$APPDIR" RelayPony-x86_64.AppImage
+```
+
+### Arch (AUR)
+
+`packaging/aur/PKGBUILD` builds `relaypony-bin` from the release tarball, so a release carrying
+`RelayPony-linux-x86_64.tar.gz` must exist first. Then bump `pkgver`, run `updpkgsums`, regenerate
+`.SRCINFO`, and push to the AUR — full steps in `packaging/aur/README.md`.
 
 ### Windows (`.msi`), on a Windows host
 
@@ -88,6 +111,7 @@ Signing would require a separate Windows code-signing certificate.
 cp build/compose/binaries/main/dmg/RelayPony-*.dmg RelayPony-macOS.dmg
 cp path/to/relaypony_*_amd64.deb RelayPony-linux.deb
 cp path/to/RelayPony-*.msi RelayPony-windows.msi
-gh release create v2.0.1 RelayPony-macOS.dmg RelayPony-linux.deb RelayPony-windows.msi \
+gh release create v2.0.1 RelayPony-macOS.dmg RelayPony-linux.deb \
+  RelayPony-linux-x86_64.tar.gz RelayPony-x86_64.AppImage RelayPony-windows.msi \
   --repo norsehorse-dev/RelayPonyDesktop --title "RelayPony Desktop 2.0.1" --generate-notes
 ```

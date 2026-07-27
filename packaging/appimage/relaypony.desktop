@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RelayPony
+Comment=Encrypted, direct device-to-device file transfer
+Exec=RelayPony
+Icon=relaypony
+Categories=Network;FileTransfer;Utility;
+Terminal=false

@@ -1,9 +1,9 @@
 # Releasing RelayPony Desktop
 
 Each release ships installers for every platform: a signed + notarized **`.dmg`** (macOS); a **`.deb`**,
-a portable **`.tar.gz`**, and an **`.AppImage`** (Linux); and an **`.msi`** (Windows). `jpackage` only
-builds for the OS it runs on, so each is built on its own platform — all of them automatically via CI
-(Option A). An AUR package (`relaypony-bin`) tracks the Linux tarball; see below.
+a portable **`.tar.gz`**, and an **`.AppImage`** (Linux); and an **`.msi`** (Windows). CI builds and
+publishes the Linux and Windows assets on every tag; the macOS `.dmg` is notarized on a Mac and
+uploaded to the release. An AUR package (`relaypony-bin`) tracks the Linux tarball; see below.
 
 The website (relaypony.app/desktop.php) links to the **stable asset names** `RelayPony-macOS.dmg`,
 `RelayPony-linux.deb`, `RelayPony-linux-x86_64.tar.gz`, `RelayPony-x86_64.AppImage`, and
@@ -12,49 +12,39 @@ under exactly those names.
 
 Bump `packageVersion` in `build.gradle.kts` before tagging a new version.
 
-## Option A — CI (recommended)
+## Cutting a release
 
-Push a version tag; GitHub Actions builds and publishes all three installers:
+### 1. CI builds Linux + Windows and publishes (no secrets required)
+
+Push a version tag. `.github/workflows/release.yml` builds the `.deb`, portable `.tar.gz`, and
+`.AppImage` on an Ubuntu runner and the `.msi` on a Windows runner, then creates the GitHub Release
+with those four assets. CI never signs or notarizes, so no repository secrets are needed.
 
 ```sh
-git tag v2.0.1
-git push origin v2.0.1
+git tag v2.0.2
+git push origin v2.0.2
 ```
 
-`.github/workflows/release.yml` builds the signed+notarized `.dmg` on a macOS runner, the `.deb`,
-portable `.tar.gz`, and `.AppImage` on an Ubuntu runner, and the `.msi` on a Windows runner, renames
-them to the stable names, and creates the GitHub Release. Configure these repository **secrets** first (Settings → Secrets and variables → Actions):
+### 2. Notarize the macOS dmg on a Mac and upload it
 
-| Secret | What it is |
-| --- | --- |
-| `MACOS_CERT_P12_BASE64` | Your *Developer ID Application* cert + private key, exported as a `.p12` and base64-encoded (see below) |
-| `MACOS_CERT_PASSWORD` | The password you set when exporting the `.p12` |
-| `KEYCHAIN_PASSWORD` | Any throwaway string — the password for the temporary CI keychain |
-| `MACOS_SIGN_IDENTITY` | The cert's full name, e.g. `Developer ID Application: Kevin Stewart (4AVJZV35G8)` |
-| `NOTARIZATION_APPLE_ID` | Your Apple ID email |
-| `NOTARIZATION_PASSWORD` | An app-specific password from appleid.apple.com (no trailing spaces) |
-| `NOTARIZATION_TEAM_ID` | Your team ID, e.g. `4AVJZV35G8` |
-
-Export the `.p12` once, on the Mac that holds the certificate:
-
-- Keychain Access → **login** → **My Certificates** → right-click the `Developer ID Application`
-  certificate → **Export** → save as `cert.p12` with a password (that password is `MACOS_CERT_PASSWORD`).
-- `base64 -i cert.p12 | pbcopy` and paste into the `MACOS_CERT_P12_BASE64` secret.
-
-## Option B — manual
-
-### macOS (signed + notarized), on a Mac
+CI does not build the `.dmg`. Notarize it locally and upload it to the release CI just created.
+`source ~/.pgpony-release-env` first — that file exports `MACOS_SIGN_IDENTITY` (the certificate's full
+name) and the three `NOTARIZATION_*` values, shared across the Pony-family apps.
 
 ```sh
-export MACOS_SIGN_IDENTITY="Developer ID Application: Kevin Stewart (4AVJZV35G8)"
-export NOTARIZATION_APPLE_ID="you@example.com"
-export NOTARIZATION_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password, no trailing spaces
-export NOTARIZATION_TEAM_ID="4AVJZV35G8"
+source ~/.pgpony-release-env
 ./gradlew notarizeDmg -Pcompose.desktop.mac.notarization.teamID="$NOTARIZATION_TEAM_ID"
 xcrun stapler validate build/compose/binaries/main/dmg/RelayPony-*.dmg
+cp build/compose/binaries/main/dmg/RelayPony-*.dmg RelayPony-macOS.dmg
+gh release upload v2.0.2 RelayPony-macOS.dmg --repo norsehorse-dev/RelayPonyDesktop
 ```
 
-Gotchas learned the hard way:
+The release must exist before `gh release upload`, so run this once CI has published. Until the `.dmg`
+is up, the site's macOS download link 404s — notarization takes a few minutes on Apple's side, so you
+can start it while the tag build runs and upload the moment the release appears. `stapler validate`
+printing "The validate action worked!" confirms it is signed, notarized, and stapled.
+
+macOS notarization gotchas learned the hard way:
 
 - `MACOS_SIGN_IDENTITY` must be the certificate **name**, not its SHA-1 hash — Compose looks it up by name.
 - Only **one** `Developer ID Application` cert may be in the keychain, or codesign reports
@@ -64,7 +54,17 @@ Gotchas learned the hard way:
 - The team ID goes through `-Pcompose.desktop.mac.notarization.teamID=…`; the DSL `teamId` property
   does not exist in Compose 1.11.1.
 
-### Linux (`.deb`, `.tar.gz`, `.AppImage`), on a Linux host
+### 3. Publish the AUR package (Arch)
+
+`packaging/aur/PKGBUILD` builds `relaypony-bin` from the release tarball, so a release carrying
+`RelayPony-linux-x86_64.tar.gz` must exist first. Then bump `pkgver`, run `updpkgsums`, regenerate
+`.SRCINFO`, and push to the AUR — full steps in `packaging/aur/README.md`.
+
+## Building any installer by hand
+
+Each installer can also be built directly on its own OS, e.g. to test before tagging.
+
+### Linux (`.deb`, `.tar.gz`, `.AppImage`)
 
 ```sh
 sudo apt install -y openjdk-17-jdk fakeroot desktop-file-utils
@@ -86,13 +86,7 @@ chmod +x appimagetool-x86_64.AppImage
 ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run "$APPDIR" RelayPony-x86_64.AppImage
 ```
 
-### Arch (AUR)
-
-`packaging/aur/PKGBUILD` builds `relaypony-bin` from the release tarball, so a release carrying
-`RelayPony-linux-x86_64.tar.gz` must exist first. Then bump `pkgver`, run `updpkgsums`, regenerate
-`.SRCINFO`, and push to the AUR — full steps in `packaging/aur/README.md`.
-
-### Windows (`.msi`), on a Windows host
+### Windows (`.msi`)
 
 Install a JDK 17 and **WiX Toolset 3.x** — jpackage shells out to WiX's `candle.exe`/`light.exe`, and
 WiX 4/5 will not work. `choco install wixtoolset` gets 3.14. Then, at the repo root:
@@ -101,17 +95,16 @@ WiX 4/5 will not work. `choco install wixtoolset` gets 3.14. Then, at the repo r
 gradlew.bat packageMsi
 ```
 
-The unsigned installer lands at `build\compose\binaries\main\msi\RelayPony-2.0.0.msi`. It is not
+The unsigned installer lands at `build\compose\binaries\main\msi\RelayPony-<version>.msi`. It is not
 code-signed, so Windows SmartScreen warns on first run — users click **More info -> Run anyway**.
-Signing would require a separate Windows code-signing certificate.
 
-### Publish
+### Publishing entirely by hand (no CI)
+
+If you build all five on their own machines, attach them under the stable names in one shot:
 
 ```sh
-cp build/compose/binaries/main/dmg/RelayPony-*.dmg RelayPony-macOS.dmg
-cp path/to/relaypony_*_amd64.deb RelayPony-linux.deb
-cp path/to/RelayPony-*.msi RelayPony-windows.msi
-gh release create v2.0.1 RelayPony-macOS.dmg RelayPony-linux.deb \
-  RelayPony-linux-x86_64.tar.gz RelayPony-x86_64.AppImage RelayPony-windows.msi \
-  --repo norsehorse-dev/RelayPonyDesktop --title "RelayPony Desktop 2.0.1" --generate-notes
+gh release create v2.0.2 \
+  RelayPony-macOS.dmg RelayPony-linux.deb RelayPony-linux-x86_64.tar.gz \
+  RelayPony-x86_64.AppImage RelayPony-windows.msi \
+  --repo norsehorse-dev/RelayPonyDesktop --title "RelayPony Desktop 2.0.2" --generate-notes
 ```

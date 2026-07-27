@@ -1,10 +1,10 @@
 name: Release
 
 # Cut a release by pushing a version tag:
-#   git tag v2.0.1 && git push origin v2.0.1
-# Builds a signed + notarized .dmg (macOS runner), a .deb (Ubuntu runner), and an .msi (Windows runner),
-# renames them to the stable names the website links to, and publishes the GitHub Release.
-# Requires the repository secrets documented in RELEASING.md.
+#   git tag v2.0.2 && git push origin v2.0.2
+# Builds the Linux installers (.deb, .tar.gz, .AppImage) and the Windows .msi, then publishes the
+# GitHub Release. CI does NOT sign or notarize: the macOS .dmg is notarized on a Mac and uploaded to
+# the release afterward (see RELEASING.md). No repository secrets are required.
 
 on:
   push:
@@ -12,47 +12,6 @@ on:
       - 'v*'
 
 jobs:
-  macos:
-    name: Signed + notarized dmg (macOS)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Import Developer ID certificate
-        env:
-          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -lut 21600 build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
-          security list-keychains -d user -s build.keychain login.keychain
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          rm "$RUNNER_TEMP/cert.p12"
-
-      - name: Build and notarize dmg
-        env:
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          NOTARIZATION_APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
-          NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
-          NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
-        run: |
-          chmod +x gradlew
-          ./gradlew notarizeDmg -Pcompose.desktop.mac.notarization.teamID="$NOTARIZATION_TEAM_ID"
-          cp build/compose/binaries/main/dmg/RelayPony-*.dmg RelayPony-macOS.dmg
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dmg
-          path: RelayPony-macOS.dmg
-
   linux:
     name: deb + tarball + AppImage (Linux)
     runs-on: ubuntu-latest
@@ -119,7 +78,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [macos, linux, windows]
+    needs: [linux, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -132,7 +91,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
-            artifacts/dmg/RelayPony-macOS.dmg \
             artifacts/linux/RelayPony-linux.deb \
             artifacts/linux/RelayPony-linux-x86_64.tar.gz \
             artifacts/linux/RelayPony-x86_64.AppImage \

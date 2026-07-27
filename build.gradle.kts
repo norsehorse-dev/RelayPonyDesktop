@@ -54,7 +54,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Deb, TargetFormat.Msi)
             packageName = "RelayPony"
-            packageVersion = "2.0.0"
+            packageVersion = "2.0.2"
             description = "Encrypted, direct device-to-device file transfer"
             vendor = "NorseHorse"
             copyright = "Copyright 2026 NorseHorse"

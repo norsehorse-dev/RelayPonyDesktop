@@ -49,6 +49,43 @@ jobs:
             RelayPony-linux-x86_64.tar.gz
             RelayPony-x86_64.AppImage
 
+  linux-arm:
+    name: deb + tarball + AppImage (Linux arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: sudo apt-get update && sudo apt-get install -y fakeroot desktop-file-utils
+      - name: Build deb + portable tarball
+        run: |
+          chmod +x gradlew
+          ./gradlew packageDeb createDistributable
+          cp build/compose/binaries/main/deb/relaypony_*_arm64.deb RelayPony-linux-arm64.deb
+          tar -czf RelayPony-linux-aarch64.tar.gz -C build/compose/binaries/main/app RelayPony
+      - name: Build AppImage
+        run: |
+          APPDIR=RelayPony.AppDir
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR"
+          cp -r build/compose/binaries/main/app/RelayPony/* "$APPDIR/"
+          cp packaging/appimage/AppRun "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+          cp packaging/appimage/relaypony.desktop "$APPDIR/relaypony.desktop"
+          cp packaging/relaypony.png "$APPDIR/relaypony.png"
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
+          chmod +x appimagetool-aarch64.AppImage
+          ARCH=aarch64 ./appimagetool-aarch64.AppImage --appimage-extract-and-run "$APPDIR" RelayPony-aarch64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm
+          path: |
+            RelayPony-linux-arm64.deb
+            RelayPony-linux-aarch64.tar.gz
+            RelayPony-aarch64.AppImage
+
   windows:
     name: msi (Windows)
     runs-on: windows-latest
@@ -78,7 +115,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [linux, windows]
+    needs: [linux, linux-arm, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -94,6 +131,9 @@ jobs:
             artifacts/linux/RelayPony-linux.deb \
             artifacts/linux/RelayPony-linux-x86_64.tar.gz \
             artifacts/linux/RelayPony-x86_64.AppImage \
+            artifacts/linux-arm/RelayPony-linux-arm64.deb \
+            artifacts/linux-arm/RelayPony-linux-aarch64.tar.gz \
+            artifacts/linux-arm/RelayPony-aarch64.AppImage \
             artifacts/msi/RelayPony-windows.msi \
             --repo "${{ github.repository }}" \
             --title "RelayPony Desktop ${{ github.ref_name }}" \

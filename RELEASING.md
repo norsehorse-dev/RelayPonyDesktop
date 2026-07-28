@@ -1,12 +1,14 @@
 # Releasing RelayPony Desktop
 
-Each release ships installers for every platform: a signed + notarized **`.dmg`** (macOS); a **`.deb`**,
-a portable **`.tar.gz`**, and an **`.AppImage`** (Linux); and an **`.msi`** (Windows). CI builds and
-publishes the Linux and Windows assets on every tag; the macOS `.dmg` is notarized on a Mac and
-uploaded to the release. An AUR package (`relaypony-bin`) tracks the Linux tarball; see below.
+Each release ships installers for every platform: a notarized **`.dmg`** (macOS, Apple Silicon);
+**`.deb`**, portable **`.tar.gz`**, and **`.AppImage`** builds for Linux in both **x86_64** and
+**aarch64**; and an **`.msi`** (Windows, x64). CI builds and publishes the Linux and Windows assets on
+every tag; the macOS `.dmg` is notarized on a Mac and uploaded to the release. An AUR package
+(`relaypony-bin`) covers both Linux arches; see below.
 
 The website (relaypony.app/desktop.php) links to the **stable asset names** `RelayPony-macOS.dmg`,
-`RelayPony-linux.deb`, `RelayPony-linux-x86_64.tar.gz`, `RelayPony-x86_64.AppImage`, and
+`RelayPony-linux.deb`, `RelayPony-linux-x86_64.tar.gz`, `RelayPony-x86_64.AppImage`,
+`RelayPony-linux-arm64.deb`, `RelayPony-linux-aarch64.tar.gz`, `RelayPony-aarch64.AppImage`, and
 `RelayPony-windows.msi` through `/releases/latest/download/…`, so every release must attach its assets
 under exactly those names.
 
@@ -17,8 +19,9 @@ Bump `packageVersion` in `build.gradle.kts` before tagging a new version.
 ### 1. CI builds Linux + Windows and publishes (no secrets required)
 
 Push a version tag. `.github/workflows/release.yml` builds the `.deb`, portable `.tar.gz`, and
-`.AppImage` on an Ubuntu runner and the `.msi` on a Windows runner, then creates the GitHub Release
-with those four assets. CI never signs or notarizes, so no repository secrets are needed.
+`.AppImage` on both an x86_64 (`ubuntu-latest`) and an arm64 (`ubuntu-24.04-arm`) runner, plus the
+`.msi` on a Windows runner, then creates the GitHub Release with those seven assets. CI never signs or
+notarizes, so no repository secrets are needed.
 
 ```sh
 git tag v2.0.2
@@ -71,6 +74,10 @@ sudo apt install -y openjdk-17-jdk fakeroot desktop-file-utils
 ./gradlew packageDeb createDistributable
 tar -czf RelayPony-linux-x86_64.tar.gz -C build/compose/binaries/main/app RelayPony
 ```
+
+On an `aarch64` host the identical steps produce the ARM build — name the outputs `RelayPony-linux-arm64.deb`,
+`RelayPony-linux-aarch64.tar.gz`, and `RelayPony-aarch64.AppImage`, and fetch `appimagetool-aarch64.AppImage`.
+CI does exactly this on the `ubuntu-24.04-arm` runner.
 
 For the AppImage, assemble an AppDir from that app image and run `appimagetool`:
 

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -95,14 +96,16 @@ private fun App(c: DesktopController) {
                     Spacer(Modifier.height(12.dp))
                     NavigationRailItem(tab == 0, { tab = 0 }, icon = { Icon(Icons.Filled.Send, "Send") }, label = { Text("Send") })
                     NavigationRailItem(tab == 1, { tab = 1 }, icon = { Icon(Icons.Filled.Download, "Receive") }, label = { Text("Receive") })
-                    NavigationRailItem(tab == 2, { tab = 2 }, icon = { Icon(Icons.Filled.Folder, "Files") }, label = { Text("Files") })
-                    NavigationRailItem(tab == 3, { tab = 3 }, icon = { Icon(Icons.Filled.Settings, "Settings") }, label = { Text("Settings") })
+                    NavigationRailItem(tab == 2, { tab = 2 }, icon = { Icon(Icons.Filled.Wifi, "Direct") }, label = { Text("Direct") })
+                    NavigationRailItem(tab == 3, { tab = 3 }, icon = { Icon(Icons.Filled.Folder, "Files") }, label = { Text("Files") })
+                    NavigationRailItem(tab == 4, { tab = 4 }, icon = { Icon(Icons.Filled.Settings, "Settings") }, label = { Text("Settings") })
                 }
                 Box(Modifier.weight(1f).fillMaxSize()) {
                     when (tab) {
                         0 -> SendScreen(c)
                         1 -> ReceiveScreen(c)
-                        2 -> FilesScreen(c)
+                        2 -> DirectScreen(c)
+                        3 -> FilesScreen(c)
                         else -> SettingsScreen(c)
                     }
                     if (c.status.isNotEmpty()) {
@@ -122,6 +125,7 @@ private fun App(c: DesktopController) {
 @Composable
 private fun SendScreen(c: DesktopController) {
     var pairTarget by remember { mutableStateOf<DesktopDiscovery.Peer?>(null) }
+    var byAddress by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Send", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         c.sendProgress?.let { p ->
@@ -130,9 +134,30 @@ private fun SendScreen(c: DesktopController) {
                 Text("Sending… ${(p * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = BrandViolet)
             }
         }
-        Text("Nearby devices", style = MaterialTheme.typography.titleSmall)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Nearby devices", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            TextButton(enabled = !c.scanning, onClick = { c.rescan() }) {
+                Text(if (c.scanning) "Searching…" else "Search again")
+            }
+            if (c.pairedDevices.isNotEmpty()) {
+                TextButton(onClick = { byAddress = true }) { Text("Send by address…") }
+            }
+        }
         if (c.peers.isEmpty()) {
             Text("Looking for nearby devices…", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text(
+                "Both devices need to be on the same network — a router's Wi-Fi, or one device's " +
+                    "hotspot with the other joined to it. Make sure the other device is on its " +
+                    "Receive screen, then tap Search again.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+            )
+            Text(
+                "Still nothing? Some networks isolate clients from each other. Use \"Send by " +
+                    "address\" with the address shown on the other device's Receive screen.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+            )
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(c.peers) { peer ->
@@ -158,7 +183,18 @@ private fun SendScreen(c: DesktopController) {
                                 color = if (paired) BrandViolet else Color.Gray,
                             )
                         }
-                        Text("wire v${peer.maxWire}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        // Which mechanism found this peer, not just what it can speak. When
+                        // discovery is the thing under suspicion — a hotspot, a filtered AP — "did
+                        // mDNS or the beacon find it" is the first question, and it should not
+                        // require dropping to the CLI to answer.
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(peer.source, style = MaterialTheme.typography.labelSmall, color = BrandViolet)
+                            Text(
+                                if (peer.via.isEmpty()) "wire v${peer.maxWire}" else "${peer.via} · wire v${peer.maxWire}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray,
+                            )
+                        }
                     }
                 }
             }
@@ -180,6 +216,77 @@ private fun SendScreen(c: DesktopController) {
             dismissButton = { TextButton(onClick = { pairTarget = null }) { Text("Cancel") } },
         )
     }
+    if (byAddress) SendByAddressDialog(c) { byAddress = false }
+}
+
+/**
+ * Send to an already-paired device at an address typed by hand.
+ *
+ * The escape hatch for networks mDNS can't cross. Pairing is what supplies the key — the part an
+ * address can't give us — so this only offers devices already in the trust store, and the security
+ * model is unchanged: we still encrypt to a pinned handle, we just found the socket differently.
+ */
+@Composable
+private fun SendByAddressDialog(c: DesktopController, onDismiss: () -> Unit) {
+    var selected by remember { mutableStateOf(c.pairedDevices.firstOrNull()) }
+    var host by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf(Config.listenPort.toString()) }
+    val portNumber = port.trim().toIntOrNull()
+    val ready = selected != null && host.isNotBlank() && portNumber != null && portNumber in 1..65535
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Send by address") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Use this when the other device won't show up on its own. Its Receive screen " +
+                        "lists the address and port to type here.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text("Paired device", style = MaterialTheme.typography.labelMedium)
+                c.pairedDevices.forEach { device ->
+                    val chosen = device.recipientHandle == selected?.recipientHandle
+                    Card(Modifier.fillMaxWidth().clickable { selected = device }) {
+                        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            TrustBadge(chosen)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                device.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (chosen) BrandViolet else Color.Gray,
+                            )
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = host, onValueChange = { host = it }, singleLine = true,
+                        label = { Text("Address") }, modifier = Modifier.weight(2f),
+                    )
+                    OutlinedTextField(
+                        value = port, onValueChange = { port = it }, singleLine = true,
+                        label = { Text("Port") }, modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = ready,
+                onClick = {
+                    val device = selected
+                    val p = portNumber
+                    if (device != null && p != null) {
+                        val files = pickFiles()
+                        if (files.isNotEmpty()) c.sendToAddress(files, device, host, p)
+                    }
+                    onDismiss()
+                },
+            ) { Text("Choose files & send") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -211,6 +318,28 @@ private fun ReceiveScreen(c: DesktopController) {
             style = MaterialTheme.typography.bodySmall,
             color = Color.Gray,
         )
+        if (c.receiving) {
+            // Always show the address. When discovery works this is redundant; when it doesn't —
+            // a phone hotspot, an AP that eats multicast — it is the only way anyone reaches us,
+            // and hunting for it in `ip addr` is not something a user should have to do.
+            if (c.advertisingOn.isEmpty()) {
+                Text(
+                    "Not discoverable — nothing accepted the mDNS advertisement. Other devices can " +
+                        "still reach you at the address below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFB3261E),
+                )
+            }
+            c.networkProblems.forEach {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = Color(0xFFB3261E))
+            }
+            if (c.reachableAt.isNotEmpty()) {
+                Text("Reach this computer at", style = MaterialTheme.typography.labelMedium)
+                c.reachableAt.forEach {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = BrandViolet)
+                }
+            }
+        }
     }
 }
 
@@ -435,4 +564,96 @@ private fun humanSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> String.format("%.1f KB", bytes / 1024.0)
     bytes < 1024L * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024))
     else -> String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024))
+}
+
+// --- Wi-Fi Direct ---------------------------------------------------------------------------
+
+/**
+ * Wi-Fi Direct: the two radios talk to each other with no network in between — no router, no
+ * hotspot, no shared Wi-Fi at all. It is also the most environment-dependent thing in the app, so
+ * this screen leads with a capability check and shows its working when something fails.
+ */
+@Composable
+private fun DirectScreen(c: DesktopController) {
+    LaunchedEffect(Unit) { if (c.p2pReadiness == null) c.p2pCheck() }
+    var showLog by remember { mutableStateOf(false) }
+    val readiness = c.p2pReadiness
+
+    Column(
+        Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text("Connect directly", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "Talk straight to a phone over Wi-Fi Direct — no shared network needed. Pair with the " +
+                "device first over Wi-Fi; there's no QR exchange on this path.",
+            style = MaterialTheme.typography.bodySmall, color = Color.Gray,
+        )
+
+        when {
+            readiness == null -> Text("Checking…", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            !readiness.usable -> {
+                Text("Not available on this machine", style = MaterialTheme.typography.titleSmall, color = Color(0xFFB3261E))
+                readiness.blockers.forEach {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB3261E))
+                }
+                readiness.notes.forEach {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+                OutlinedButton(onClick = { c.p2pCheck() }) { Text("Check again") }
+            }
+            else -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(enabled = !c.p2pBusy, onClick = { c.p2pFind() }) {
+                        Text(if (c.p2pBusy) "Working…" else "Find devices")
+                    }
+                    OutlinedButton(enabled = c.p2pBusy, onClick = { c.p2pStop() }) { Text("Stop") }
+                }
+                if (c.p2pBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                c.sendProgress?.let { p -> LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth()) }
+
+                if (c.p2pPeers.isEmpty()) {
+                    Text(
+                        "No devices yet. On the phone, open RelayPony and tap \"Find devices\" under " +
+                            "Connect directly, then search here.",
+                        style = MaterialTheme.typography.bodySmall, color = Color.Gray,
+                    )
+                }
+                c.p2pPeers.forEach { peer ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(peer.name, style = MaterialTheme.typography.titleSmall)
+                                Text(peer.deviceAddress, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            }
+                            TextButton(enabled = !c.p2pBusy, onClick = {
+                                val files = pickFiles()
+                                if (files.isNotEmpty()) c.p2pTransfer(peer, files)
+                            }) { Text("Send files") }
+                            TextButton(enabled = !c.p2pBusy, onClick = { c.p2pTransfer(peer, emptyList()) }) {
+                                Text("Receive")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (c.p2pStatus.isNotEmpty()) {
+            Text(c.p2pStatus, style = MaterialTheme.typography.bodySmall, color = BrandViolet)
+        }
+        if (c.p2pTranscript.isNotEmpty()) {
+            TextButton(onClick = { showLog = !showLog }) {
+                Text(if (showLog) "Hide details" else "Show what happened")
+            }
+            if (showLog) {
+                // Verbatim, in order — this is what belongs in a bug report when P2P misbehaves.
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    c.p2pTranscript.forEach {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
+                }
+            }
+        }
+    }
 }

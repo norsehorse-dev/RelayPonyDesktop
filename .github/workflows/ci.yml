@@ -1,0 +1,147 @@
+name: CI
+
+# Build and smoke-test on every push, and produce installable Linux artifacts you can download
+# without cutting a release. Grab them from the run's "Artifacts" section, or trigger a build by
+# hand from the Actions tab (Run workflow) on any branch.
+#
+# release.yml still owns tagged releases; this is deliberately the fast, everyday one — x86_64 only,
+# no Windows, no arm64 — so a push gives you something testable in a couple of minutes.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build + smoke test (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - run: sudo apt-get update && sudo apt-get install -y fakeroot desktop-file-utils
+
+      - name: Compile
+        run: |
+          chmod +x gradlew
+          ./gradlew createDistributable
+
+      # Resolved once rather than hard-coded in five places: jpackage's app-image layout is
+      # "<appdir>/bin/<name>" today, but a wrong guess would fail as a confusing "not found" in the
+      # middle of a test rather than here, with the tree printed next to it.
+      - name: Locate the built launcher
+        run: |
+          BIN=$(find build/compose/binaries/main/app -type f -name RelayPony -perm -u+x | head -1)
+          if [ -z "$BIN" ]; then
+            echo "Could not find the RelayPony launcher. Build output was:"
+            find build/compose/binaries/main/app -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "RELAYPONY_BIN=$PWD/$BIN" >> "$GITHUB_ENV"
+          echo "using $BIN"
+
+      # Proves the crypto/wire/session stack actually initialises on this JVM, which a compile does
+      # not. Cheap, and it fails loudly if a dependency or the age core is misconfigured.
+      - name: Selftest
+        run: |
+          "$RELAYPONY_BIN" selftest | tee /tmp/selftest.log
+          grep -q "^OK" /tmp/selftest.log
+
+      # The real regression test: two processes, one transfer, no discovery involved. This is the
+      # path that exists so a transfer is still possible when the network eats mDNS and broadcast,
+      # so it is the one most worth protecting — and unlike discovery it is deterministic on a CI
+      # runner, where there are no peers and multicast goes nowhere.
+      - name: End-to-end transfer over the manual address path
+        run: |
+          set -euo pipefail
+          BIN="$RELAYPONY_BIN"
+          mkdir -p /tmp/rx/inbox /tmp/tx /tmp/cfg-rx /tmp/cfg-tx
+          echo "ci payload $(git rev-parse --short HEAD)" > /tmp/tx/ci.txt
+
+          XDG_CONFIG_HOME=/tmp/cfg-rx RELAYPONY_NAME=ci-receiver \
+            "$BIN" receive --dir /tmp/rx/inbox > /tmp/rx.log 2>&1 &
+          RECEIVER=$!
+          trap 'kill $RECEIVER 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 30); do
+            grep -qE 'Listening on port' /tmp/rx.log && break
+            sleep 1
+          done
+          cat /tmp/rx.log
+
+          # The receiver's own banner is the source of truth for both the handle and the port, so a
+          # change to either is caught here rather than by a stale hard-coded value in this file.
+          HANDLE=$(grep -oE 'age1[a-z0-9]+' /tmp/rx.log | head -1)
+          PORT=$(grep -oE 'Listening on port [0-9]+' /tmp/rx.log | grep -oE '[0-9]+')
+          test -n "$HANDLE" && test -n "$PORT"
+          echo "receiver: $HANDLE on port $PORT"
+
+          XDG_CONFIG_HOME=/tmp/cfg-tx RELAYPONY_NAME=ci-sender \
+            "$BIN" send /tmp/tx/ci.txt --to "$HANDLE" --host 127.0.0.1 --port "$PORT"
+
+          for i in $(seq 1 15); do
+            [ -s /tmp/rx/inbox/ci.txt ] && break
+            sleep 1
+          done
+          diff /tmp/tx/ci.txt /tmp/rx/inbox/ci.txt
+          echo "transfer verified end to end"
+
+      # Runs against a machine with no peers, so this asserts it survives that gracefully rather
+      # than asserting it finds anything. A crash or hang here is the failure being caught.
+      - name: Doctor runs clean with nothing to find
+        run: |
+          timeout 120 "$RELAYPONY_BIN" doctor | tee /tmp/doctor.log
+          grep -q "Beacon on UDP" /tmp/doctor.log
+
+      # Linux-only, and a CI runner has no wireless hardware — so this asserts the preflight reports
+      # that honestly instead of crashing or claiming support it does not have.
+      - name: Wi-Fi Direct preflight degrades honestly
+        run: |
+          "$RELAYPONY_BIN" p2p check | tee /tmp/p2p.log
+          grep -q "Wi-Fi Direct:" /tmp/p2p.log
+
+      - name: Package deb
+        run: |
+          ./gradlew packageDeb
+          cp build/compose/binaries/main/deb/relaypony_*_amd64.deb RelayPony-linux.deb
+
+      - name: Package AppImage
+        run: |
+          APPDIR=RelayPony.AppDir
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR"
+          cp -r build/compose/binaries/main/app/RelayPony/* "$APPDIR/"
+          cp packaging/appimage/AppRun "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+          cp packaging/appimage/relaypony.desktop "$APPDIR/relaypony.desktop"
+          cp packaging/relaypony.png "$APPDIR/relaypony.png"
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run "$APPDIR" RelayPony-x86_64.AppImage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relaypony-linux-x86_64-${{ github.sha }}
+          path: |
+            RelayPony-linux.deb
+            RelayPony-x86_64.AppImage
+          retention-days: 14
+
+      # Whatever went wrong, the logs explain it — worth keeping even on failure.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.sha }}
+          path: |
+            /tmp/rx.log
+            /tmp/doctor.log
+            /tmp/p2p.log
+          retention-days: 7

@@ -51,8 +51,20 @@ class DesktopController {
     var sendProgress by mutableStateOf<Float?>(null); private set   // null = no send in flight
     var busy by mutableStateOf(false); private set                 // an export/import is running
 
-    private val discovery = DesktopDiscovery()   // one jmdns instance: browses AND advertises
+    /** "192.168.1.24:45789  (wlan0)" per interface — so a stuck user always has an address to type. */
+    val reachableAt = mutableStateListOf<String>()
+    /** Interfaces the advertisement actually went out on. Empty while receiving = undiscoverable. */
+    val advertisingOn = mutableStateListOf<String>()
+    /** Anything mDNS could not do, in plain words, rather than swallowed by a runCatching. */
+    val networkProblems = mutableStateListOf<String>()
+
+    /** mDNS + UDP beacon together; see [PeerFinder] for why one mechanism is not enough. */
+    private val finder = PeerFinder(myHandle)
     private var server: ServerSocket? = null
+
+    /** Addresses that answered the last subnet scan but that discovery never reported. */
+    val sweepHits = mutableStateListOf<SubnetSweep.Hit>()
+    var scanning by mutableStateOf(false); private set
 
     init {
         refreshPaired()
@@ -78,7 +90,7 @@ class DesktopController {
     /** Start continuous discovery for the Send tab. Call once. */
     fun startBrowsing() {
         Thread {
-            discovery.browse { p ->
+            finder.start { p ->
                 ui {
                     val i = peers.indexOfFirst { it.recipientHandle == p.recipientHandle }
                     if (i >= 0) peers[i] = p else peers.add(p)
@@ -86,6 +98,148 @@ class DesktopController {
             }
         }.apply { isDaemon = true; start() }
     }
+
+    /**
+     * The "look harder" button: an active beacon probe, then a TCP scan of the local subnet for
+     * anything discovery missed. The scan can't identify who answered — see [SubnetSweep] — so its
+     * results are offered as addresses to send to, not as discovered devices.
+     */
+    fun rescan() {
+        if (scanning) return
+        scanning = true
+        status = "Searching…"
+        Thread {
+            runCatching {
+                finder.findOnce(2500).forEach { p ->
+                    ui {
+                        val i = peers.indexOfFirst { it.recipientHandle == p.recipientHandle }
+                        if (i >= 0) peers[i] = p else peers.add(p)
+                    }
+                }
+                val known = peers.toList()
+                val port = if (listenPort > 0) listenPort else Config.listenPort
+                val hits = finder.sweep(port, known)
+                ui {
+                    sweepHits.clear(); sweepHits.addAll(hits)
+                    status = when {
+                        peers.isNotEmpty() && hits.isEmpty() -> "Found ${peers.size} device(s)."
+                        hits.isEmpty() -> "Nothing found. Check both devices are on the same network."
+                        else -> "Found ${peers.size} device(s) and ${hits.size} unidentified address(es)."
+                    }
+                }
+            }.onFailure { e -> ui { status = "Search failed: ${e.message ?: e.javaClass.simpleName}" } }
+            ui { scanning = false }
+        }.apply { isDaemon = true; start() }
+    }
+
+    // --- Wi-Fi Direct -------------------------------------------------------------------------
+
+    /** Nearby Wi-Fi Direct devices. Populated only while a P2P search is running. */
+    val p2pPeers = mutableStateListOf<WifiDirectLinux.P2pPeer>()
+    var p2pReadiness by mutableStateOf<WifiDirectLinux.Readiness?>(null); private set
+    var p2pBusy by mutableStateOf(false); private set
+    var p2pStatus by mutableStateOf(""); private set
+    val p2pTranscript = mutableStateListOf<String>()
+    private var p2p: WifiDirectLinux? = null
+
+    /** Ask whether Wi-Fi Direct can work here at all, before offering the user any of it. */
+    fun p2pCheck() {
+        if (p2pBusy) return
+        p2pBusy = true
+        p2pStatus = "Checking Wi-Fi Direct support…"
+        Thread {
+            val radio = WifiDirectLinux()
+            val readiness = runCatching { radio.preflight() }.getOrElse {
+                WifiDirectLinux.Readiness(false, listOf(it.message ?: "check failed"), emptyList())
+            }
+            radio.close()
+            ui {
+                p2pReadiness = readiness
+                p2pBusy = false
+                p2pStatus = if (readiness.usable) "Wi-Fi Direct is available." else "Wi-Fi Direct is unavailable here."
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    fun p2pFind() {
+        if (p2pBusy) return
+        p2pBusy = true
+        p2pPeers.clear()
+        p2pStatus = "Looking for nearby devices…"
+        Thread {
+            val radio = p2p ?: WifiDirectLinux().also { p2p = it }
+            runCatching {
+                radio.startDiscovery { peer -> ui { if (p2pPeers.none { it.deviceAddress == peer.deviceAddress }) p2pPeers.add(peer) } }
+                Thread.sleep(20_000)
+                radio.knownPeers().forEach { peer ->
+                    ui { if (p2pPeers.none { it.deviceAddress == peer.deviceAddress }) p2pPeers.add(peer) }
+                }
+                radio.stopDiscovery()
+            }.onFailure { e -> ui { p2pStatus = "Search failed: ${e.message}" } }
+            ui {
+                p2pBusy = false
+                p2pTranscript.clear(); p2pTranscript.addAll(radio.transcript())
+                if (p2pStatus.startsWith("Looking")) {
+                    p2pStatus = if (p2pPeers.isEmpty()) "No Wi-Fi Direct devices found." else "Found ${p2pPeers.size}."
+                }
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    /**
+     * Form a group with [peer] and run one transfer. Empty [files] means "wait to receive" — the
+     * [com.relaypony.session.WifiIdent] handshake refuses if both sides want the same direction.
+     */
+    fun p2pTransfer(peer: WifiDirectLinux.P2pPeer, files: List<File>) {
+        if (p2pBusy) return
+        p2pBusy = true
+        p2pStatus = "Connecting to ${peer.name} — accept the invitation on the phone…"
+        Thread {
+            val radio = p2p ?: WifiDirectLinux().also { p2p = it }
+            runCatching {
+                val group = radio.connect(peer.deviceAddress)
+                ui { p2pStatus = "Group up on ${group.iface}. Setting up addressing…" }
+                val peerIp = radio.resolvePeerAddress(group)
+                val outcome = WifiDirectSession.run(
+                    isGroupOwner = group.isGroupOwner,
+                    peerAddress = peerIp,
+                    provider = provider,
+                    identity = identity,
+                    deviceName = deviceName,
+                    myHandle = myHandle,
+                    trust = trust,
+                    filesToSend = files,
+                    inbox = inbox,
+                    onStatus = { s -> ui { p2pStatus = s } },
+                    onProgress = { sent, total ->
+                        ui { sendProgress = if (total > 0L) (sent.toFloat() / total).coerceIn(0f, 1f) else null }
+                    },
+                )
+                ui {
+                    sendProgress = null
+                    p2pStatus = when (outcome) {
+                        is WifiDirectSession.Outcome.Sent -> "Sent ${outcome.files} file(s) to ${outcome.to}."
+                        is WifiDirectSession.Outcome.Received -> {
+                            outcome.files.forEach { received.add(0, it) }
+                            "Received ${outcome.files.size} file(s) from ${outcome.from}."
+                        }
+                    }
+                }
+            }.onFailure { e ->
+                ui { sendProgress = null; p2pStatus = "Wi-Fi Direct failed: ${e.message ?: e.javaClass.simpleName}" }
+            }
+            runCatching { radio.disconnect() }
+            ui { p2pBusy = false; p2pTranscript.clear(); p2pTranscript.addAll(radio.transcript()) }
+        }.apply { isDaemon = true; start() }
+    }
+
+    fun p2pStop() {
+        Thread { runCatching { p2p?.close() }; p2p = null }.apply { isDaemon = true; start() }
+        p2pBusy = false
+        p2pStatus = "Wi-Fi Direct stopped."
+    }
+
+    // --- Pairing and trust --------------------------------------------------------------------
 
     fun isPaired(handle: String): Boolean = Pairing.canSendOneTap(handle, trust)
     fun sasFor(peer: DesktopDiscovery.Peer): String = Sas.code(myHandle, peer.recipientHandle)
@@ -158,14 +312,32 @@ class DesktopController {
 
     private fun reAdvertise() {
         Thread {
-            runCatching { discovery.stopAdvertising() }
+            runCatching { finder.stopAdvertising() }
             advertiseNow()
         }.apply { isDaemon = true; start() }
     }
 
+    /**
+     * Announce ourselves and report honestly what happened. The old version wrapped this in a bare
+     * runCatching, so a total failure to advertise looked identical to success: the user saw
+     * "Listening on port N" while being invisible to every phone on the network.
+     */
     private fun advertiseNow() {
         val port = listenPort
-        if (port > 0) runCatching { discovery.advertise("RelayPony-$port", port, deviceName, myHandle) }
+        if (port <= 0) return
+        val ok = runCatching { finder.advertise(port, deviceName, myHandle) }.getOrDefault(emptyList())
+        val diag = runCatching { finder.diagnostics() }.getOrNull()
+        ui {
+            advertisingOn.clear(); advertisingOn.addAll(ok)
+            networkProblems.clear(); diag?.problems?.let { networkProblems.addAll(it) }
+            reachableAt.clear(); reachableAt.addAll(LocalNet.reachableAt(port))
+            status = if (ok.isEmpty()) {
+                "mDNS could not advertise — the beacon is still running, so newer devices can " +
+                    "still find you at ${reachableAt.firstOrNull() ?: "this machine's address"}."
+            } else {
+                "Discoverable on ${ok.joinToString(", ")} + beacon · port $port"
+            }
+        }
     }
 
     fun send(files: List<File>, peer: DesktopDiscovery.Peer) {
@@ -185,17 +357,24 @@ class DesktopController {
                 )
                 ui { status = "Sent ${files.size} file(s) to ${peer.name}."; sendProgress = null }
             } catch (e: Exception) {
-                ui { status = "Send failed: ${e.message}"; sendProgress = null }
+                ui {
+                    status = "Send to ${peer.name} failed: ${e.message ?: e.javaClass.simpleName} " +
+                        "(tried ${peer.host}:${peer.port})"
+                    sendProgress = null
+                }
             }
         }.apply { isDaemon = true; start() }
     }
 
     fun startReceiving() {
         if (receiving) return
-        val srv = ServerSocket(0)
+        // Prefer the stable default port so the address is predictable and firewall-ruleable;
+        // fall back to an OS-assigned one rather than refusing to start if it's taken.
+        val srv = LocalNet.listen(Config.listenPort)
         server = srv
         receiving = true
         listenPort = srv.localPort
+        reachableAt.clear(); reachableAt.addAll(LocalNet.reachableAt(srv.localPort))
         status = "Listening on port ${srv.localPort}"
         Thread {
             advertiseNow()
@@ -224,10 +403,31 @@ class DesktopController {
     fun stopReceiving() {
         server?.let { runCatching { it.close() } }
         server = null
-        discovery.stopAdvertising()
+        finder.stopAdvertising()
         receiving = false
         listenPort = 0
+        advertisingOn.clear()
+        reachableAt.clear()
         status = "Stopped receiving"
+    }
+
+    /**
+     * Send to a paired device at an address the user typed, with no discovery involved.
+     *
+     * This is the way out of every network where multicast doesn't survive — a phone hotspot, guest
+     * Wi-Fi with client isolation, a VPN. The peer's key comes from the pairing, which is the part
+     * an IP address can't supply; wire v1 is the frozen floor every build understands, since we
+     * can't ask an undiscovered peer what it speaks.
+     */
+    fun sendToAddress(files: List<File>, device: PinnedDevice, host: String, port: Int) {
+        val peer = DesktopDiscovery.Peer(
+            name = device.name,
+            host = host.trim(),
+            port = port,
+            recipientHandle = device.recipientHandle,
+            maxWire = 1,
+        )
+        send(files, peer)
     }
 
     private fun uniqueFile(dir: File, name: String): File {

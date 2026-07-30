@@ -24,6 +24,19 @@ object Config {
     val trustFile: File = File(configDir, "trust.json")
     val nameFile: File = File(configDir, "name")
 
+    /**
+     * The port we prefer to listen on. It used to be whatever the OS handed out, which meant the
+     * address changed every run: you could not write a firewall rule for it, and you could not tell
+     * anyone where to reach you if mDNS was not getting through. A stable default fixes both. If it
+     * is already taken we still fall back to an OS-assigned port (see [LocalNet.listen]).
+     *
+     * Override with RELAYPONY_PORT; set RELAYPONY_PORT=0 for the old ephemeral behaviour.
+     */
+    const val DEFAULT_PORT = com.relaypony.transport.Beacon.DEFAULT_TRANSFER_PORT
+
+    val listenPort: Int =
+        System.getenv("RELAYPONY_PORT")?.trim()?.toIntOrNull()?.takeIf { it in 0..65535 } ?: DEFAULT_PORT
+
     /** The auto-detected default name (env override, else hostname, else a friendly fallback). */
     val deviceName: String =
         System.getenv("RELAYPONY_NAME")?.takeIf { it.isNotBlank() }

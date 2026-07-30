@@ -105,11 +105,7 @@ class WifiDirectLinux {
 
         val socket = findControlSocket()
         if (socket == null) {
-            blockers.add(
-                "No wpa_supplicant control socket in /run/wpa_supplicant or /var/run/wpa_supplicant. " +
-                    "If NetworkManager runs wpa_supplicant with only -u (D-Bus), no socket is created; " +
-                    "add '-s -O /run/wpa_supplicant' to the service's ExecStart."
-            )
+            blockers.add(controlSocketBlocker())
         } else {
             socketArg = socket
             notes.add("control interface: ${socket.joinToString(" ")}")
@@ -252,24 +248,133 @@ class WifiDirectLinux {
      * renegotiating. Some Android builds only raise the "Invitation to connect" dialog after a
      * Provision Discovery exchange, so a first attempt that dies quietly is retried with `provdisc`.
      */
-    fun connect(deviceAddress: String, timeoutMs: Long = 60_000): Group {
+    fun connect(
+        deviceAddress: String,
+        timeoutMs: Long = 90_000,
+        onStatus: (String) -> Unit = {},
+    ): Group {
         startMonitor()
-        events.clear()
+        prepareForConnect(deviceAddress)
+        val perAttempt = (timeoutMs / CONNECT_STRATEGIES.size).coerceAtLeast(25_000)
+        var lastProblem = "no response"
 
-        var reply = wpa("p2p_connect", deviceAddress, "pbc", "go_intent=0", "auto")
-        note("p2p_connect $deviceAddress pbc go_intent=0 auto -> $reply")
-        if (reply.startsWith("FAIL")) {
-            val hint = when {
-                reply.contains("CHANNEL-UNAVAILABLE") || reply.contains("CHANNEL-UNSUPPORTED") ->
-                    " The radio can't use the requested channel — usually because it is already " +
-                        "joined to a Wi-Fi network on a different one. Disconnect Wi-Fi and retry."
-                else -> ""
+        for (modifiers in CONNECT_STRATEGIES) {
+            events.clear()
+            val reply = wpa("p2p_connect", deviceAddress, *modifiers.toTypedArray())
+            note("p2p_connect $deviceAddress ${modifiers.joinToString(" ")} -> $reply")
+
+            if (reply.startsWith("FAIL")) {
+                lastProblem = reply
+                if (reply.contains("CHANNEL-UNAVAILABLE") || reply.contains("CHANNEL-UNSUPPORTED")) {
+                    // Single-radio hardware can't put the group on a different channel than the
+                    // network it's already joined to, and no other strategy will change that.
+                    throw P2pException(
+                        "The radio can't use the channel this group needs ($reply). This usually " +
+                            "means it is already joined to a Wi-Fi network on a different channel — " +
+                            "disconnect Wi-Fi and try again."
+                    )
+                }
+                continue
             }
-            reply = wpa("p2p_connect", deviceAddress, "pbc", "go_intent=0", "provdisc")
-            note("retry with provdisc -> $reply")
-            if (reply.startsWith("FAIL")) throw P2pException("p2p_connect failed: $reply.$hint")
+
+            awaitGroup(perAttempt)?.let { return it }
+            lastProblem = "connect was accepted but no group formed"
+            runCatching { wpa("p2p_cancel") }          // clear the half-started attempt first
         }
 
+        // Last resort, and on Android often the only thing that works: stop initiating and let the
+        // phone do it. Android's Wi-Fi Direct UX is built around tapping a device on the phone, and
+        // several builds simply never raise the "Invitation to connect" dialog for an inbound
+        // request. Pre-authorising the peer means an incoming negotiation is accepted with no
+        // prompt on this side, so the whole interaction happens where the user already is.
+        onStatus(
+            "No response to our invitation. Now waiting for the phone to start it instead — " +
+                "on the phone, tap Find devices under Connect directly, then tap this computer."
+        )
+        awaitInbound(deviceAddress, INBOUND_WAIT_MS)?.let { return it }
+
+        throw P2pException(
+            "Could not form a group ($lastProblem). If this machine is joined to a 5 GHz Wi-Fi " +
+                "network, disconnect it first — a single-radio adapter cannot run a P2P group on a " +
+                "different channel than the one the station is using. On the phone: open RelayPony, tap \"Find " +
+                "devices\" under Connect directly so it is actively discovering, tap \"Arm " +
+                "receive\" on the Receive tab, keep the screen on, and accept the \"Invitation to " +
+                "connect\" prompt when it appears, or tap this computer in the phone's own device " +
+                "list. The prompt is shown by Android itself, not by RelayPony, and some builds " +
+                "never raise it for an incoming request at all — starting from the phone is the " +
+                "reliable direction."
+        )
+    }
+
+    /**
+     * Authorise [deviceAddress] and wait for it to connect to us, rather than the other way around.
+     *
+     * `p2p_connect … auth` sets up the WPS credentials for that peer without starting negotiation,
+     * so when the phone initiates, it completes with no interaction on this side. `p2p_listen` keeps
+     * us discoverable in the meantime — without it we are only findable during an active search.
+     */
+    private fun awaitInbound(deviceAddress: String, timeoutMs: Long): Group? {
+        events.clear()
+        val reply = wpa("p2p_connect", deviceAddress, "pbc", "auth")
+        note("p2p_connect $deviceAddress pbc auth -> $reply")
+        if (reply.startsWith("FAIL")) return null
+        val listen = wpa("p2p_listen", (timeoutMs / 1000).toString())
+        note("p2p_listen -> $listen")
+        return awaitGroup(timeoutMs)
+    }
+
+    /**
+     * Clear whatever the last attempt left behind, and make sure the peer is currently known.
+     *
+     * Both matter because `p2p_connect` answers a bare `FAIL` for several unrelated reasons. An
+     * attempt that timed out mid-connect leaves wpa_supplicant in provisioning state and every later
+     * connect is refused until it is cancelled; separately, peer entries age out, and phones stop
+     * being discoverable a couple of minutes after the user last tapped "find". Neither is visible
+     * in the reply, so we remove both rather than reporting a failure the user can do nothing with.
+     */
+    private fun prepareForConnect(deviceAddress: String) {
+        runCatching { wpa("p2p_cancel") }
+        runCatching { wpa("p2p_group_remove", "*") }
+
+        stationFrequency()?.let { mhz ->
+            note("station is associated at $mhz MHz")
+            if (mhz > 5000) {
+                note(
+                    "WARNING: the Wi-Fi connection is on 5 GHz. Most single-radio adapters can only " +
+                        "put a P2P group on the channel the station is already using, and phones " +
+                        "negotiate on 2.4 GHz social channels — so group formation usually fails " +
+                        "until Wi-Fi is disconnected."
+                )
+            }
+        }
+
+        val known = wpa("p2p_peers").lines().any { it.trim().equals(deviceAddress, ignoreCase = true) }
+        if (!known) {
+            note("$deviceAddress not in wpa_supplicant's peer table — refreshing discovery")
+            wpa("p2p_find", REFRESH_SECONDS.toString(), "type=social")
+            Thread.sleep(REFRESH_WAIT_MS)
+        }
+    }
+
+    /**
+     * The frequency the station interface is associated on, if any.
+     *
+     * Worth knowing before a connect: a single-radio adapter can't run a P2P group on a different
+     * channel from an active station connection, so being joined to a 5 GHz network quietly makes
+     * group formation impossible with a phone, which negotiates on 2.4 GHz.
+     */
+    private fun stationFrequency(): Int? =
+        wpa("status").lineSequence()
+            .firstOrNull { it.startsWith("freq=") }
+            ?.substringAfter('=')?.trim()?.toIntOrNull()
+
+    /**
+     * Wait for a group, or for a definitive failure.
+     *
+     * Returns null rather than throwing when this attempt didn't work, so [connect] can try the
+     * next strategy. Only a formed group is success; everything else is worth another approach.
+     */
+    private fun awaitGroup(timeoutMs: Long): Group? {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             val line = events.poll(1000, TimeUnit.MILLISECONDS) ?: continue
@@ -280,18 +385,18 @@ class WifiDirectLinux {
                     note("group up: ${g.iface} ${if (g.isGroupOwner) "GO" else "client"} go_ip=${g.goIpAddr}")
                     return g
                 }
-                line.startsWith("P2P-GO-NEG-FAILURE") ->
-                    throw P2pException("Group owner negotiation failed ($line).")
-                line.startsWith("P2P-GROUP-FORMATION-FAILURE") ->
-                    throw P2pException(
-                        "Group formation failed. Most often the invitation wasn't accepted on the " +
-                            "phone in time, or the radio is busy with a hotspot."
-                    )
+                line.startsWith("P2P-GO-NEG-FAILURE") -> {
+                    note("go negotiation failed: $line")
+                    return null
+                }
+                line.startsWith("P2P-GROUP-FORMATION-FAILURE") -> {
+                    note("group formation failed")
+                    return null
+                }
             }
         }
-        throw P2pException(
-            "Timed out waiting for the group. Accept the \"Invitation to connect\" prompt on the phone."
-        )
+        note("timed out after ${timeoutMs / 1000}s with no group")
+        return null
     }
 
     /**
@@ -447,13 +552,18 @@ class WifiDirectLinux {
             .start()
         monitor = proc
         Thread({
-            proc.inputStream.bufferedReader().use { reader: BufferedReader ->
-                while (true) {
-                    val raw = reader.readLine() ?: break
-                    val line = stripEventPrefix(raw)
-                    if (line.startsWith("P2P") || line.startsWith("AP-STA")) {
-                        note("event: $line")
-                        events.offer(line)
+            // runCatching, because closing the monitor destroys the process out from under this
+            // read and the resulting "Stream closed" is expected teardown, not an error worth
+            // printing on top of whatever the user was actually told.
+            runCatching {
+                proc.inputStream.bufferedReader().use { reader: BufferedReader ->
+                    while (true) {
+                        val raw = reader.readLine() ?: break
+                        val line = stripEventPrefix(raw)
+                        if (line.startsWith("P2P") || line.startsWith("AP-STA")) {
+                            note("event: $line")
+                            events.offer(line)
+                        }
                     }
                 }
             }
@@ -486,8 +596,44 @@ class WifiDirectLinux {
      * itself, which sidesteps the classic trap that events appear on `p2p-dev-wlan0` while commands
      * are being sent to `wlan0`.
      */
+    private fun controlDirs(): List<File> =
+        listOf("/run/wpa_supplicant", "/var/run/wpa_supplicant").map(::File).filter { it.isDirectory }
+
+    /**
+     * Say precisely why there is no usable control socket, because the two causes need opposite
+     * fixes and guessing wrong wastes real time.
+     *
+     * The directory being absent means wpa_supplicant was never told to create a socket, which is a
+     * systemd unit edit. The directory being present but unreadable means it did create one and this
+     * user simply is not in the group that owns it (Debian and Ubuntu ship `GROUP=netdev` already
+     * configured), which is one `usermod` away. Reporting the first when it is really the second
+     * sends someone rewriting service files for a permissions problem.
+     */
+    private fun controlSocketBlocker(): String {
+        val dirs = controlDirs()
+        if (dirs.isEmpty()) {
+            return "No wpa_supplicant control socket directory (/run/wpa_supplicant or " +
+                "/var/run/wpa_supplicant). If NetworkManager runs wpa_supplicant with only -u " +
+                "(D-Bus), no socket is created; add '-O /run/wpa_supplicant' to the service's " +
+                "ExecStart, then restart wpa_supplicant and NetworkManager."
+        }
+        val unreadable = dirs.filterNot { it.canRead() }
+        if (unreadable.size == dirs.size) {
+            val dir = unreadable.first()
+            return "${dir.path} exists but this user cannot read it — wpa_supplicant is creating " +
+                "the socket, this account just has no access to it. The directory is normally owned " +
+                "by the 'netdev' group: run 'sudo usermod -aG netdev \$USER', then log out and back " +
+                "in. (Check with: ls -ld ${dir.path})"
+        }
+        val dir = dirs.first { it.canRead() }
+        return "${dir.path} is readable but contains no interface socket. Is Wi-Fi enabled and " +
+            "wpa_supplicant running? (check: ls -la ${dir.path} ; systemctl status wpa_supplicant)"
+    }
+
     private fun findControlSocket(): List<String>? {
-        val dirs = listOf("/run/wpa_supplicant", "/var/run/wpa_supplicant").map(::File).filter { it.isDirectory }
+        // Only readable directories are candidates: listFiles() on an unreadable one returns null,
+        // which would otherwise look identical to an empty directory.
+        val dirs = controlDirs().filter { it.canRead() }
         for (dir in dirs) {
             File(dir, "global").takeIf { it.exists() }?.let { return listOf("-g", it.path) }
         }
@@ -568,6 +714,30 @@ class WifiDirectLinux {
     private companion object {
         val MAC = Regex("^[0-9a-fA-F:]{17}$")
         const val DISCOVERY_SECONDS = 120
+        const val REFRESH_SECONDS = 15
+        const val REFRESH_WAIT_MS = 6_000L
+        const val INBOUND_WAIT_MS = 60_000L
+
+        /**
+         * Connection strategies, tried in order until one forms a group.
+         *
+         * `provdisc` leads deliberately. It asks for a Provision Discovery exchange before GO
+         * negotiation, which is what makes Android raise its "Invitation to connect" dialog — and
+         * without that dialog the user has no way to accept, so the attempt times out having looked
+         * like it was accepted. wpa_supplicant documents it as a workaround for exactly this class
+         * of deployed implementation.
+         *
+         * `auto` then covers the case where the phone is already a group owner (it joins instead of
+         * renegotiating), and `join` forces that reading if `auto` guessed wrong.
+         *
+         * `go_intent=0` throughout: let the phone own the group, so it runs the DHCP server it
+         * already runs for phone-to-phone transfers.
+         */
+        val CONNECT_STRATEGIES = listOf(
+            listOf("pbc", "go_intent=0", "provdisc"),
+            listOf("pbc", "go_intent=0", "auto"),
+            listOf("pbc", "go_intent=0", "join"),
+        )
         const val MAX_LOG = 200
 
         /** Android's group owner address, stable across releases (WifiP2pServiceImpl). */

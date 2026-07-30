@@ -197,7 +197,7 @@ class DesktopController {
         Thread {
             val radio = p2p ?: WifiDirectLinux().also { p2p = it }
             runCatching {
-                val group = radio.connect(peer.deviceAddress)
+                val group = radio.connect(peer.deviceAddress) { msg -> ui { p2pStatus = msg } }
                 ui { p2pStatus = "Group up on ${group.iface}. Setting up addressing…" }
                 val peerIp = radio.resolvePeerAddress(group)
                 val outcome = WifiDirectSession.run(

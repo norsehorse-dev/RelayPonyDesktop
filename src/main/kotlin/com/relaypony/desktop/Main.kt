@@ -135,7 +135,7 @@ private fun p2pTransfer(args: List<String>) {
             return
         }
         println("Connecting to $peerMac — accept the invitation on the phone…")
-        val group = p2p.connect(peerMac)
+        val group = p2p.connect(peerMac) { println("  $it") }
         println("Group up on ${group.iface} (${if (group.isGroupOwner) "we own it" else "phone owns it"}).")
 
         val peerIp = p2p.resolvePeerAddress(group)

@@ -4,8 +4,10 @@ Two GitHub releases and one F-Droid changelog. The F-Droid one is already commit
 `fastlane/metadata/android/en-US/changelogs/2.txt` in the Android repo; it's reproduced at the bottom
 for reference.
 
-**Before tagging the desktop:** bump `packageVersion` in `build.gradle.kts` to `2.2.1`
-(RELEASING.md step one). Already done in the tree for this release.
+**Before tagging the desktop:** bump `packageVersion` in `build.gradle.kts` to `2.2.2`
+(RELEASING.md step one). Already done in the tree for this release. Also make sure the delivered
+`release.yml` is actually in place (`grep wrap-launcher .github/workflows/release.yml`) before
+tagging, or the .deb and tarball ship unwrapped again.
 
 Also worth deciding: `release.yml` passes `--generate-notes`, which builds notes from commit titles
 and overrides nothing. To use the text below instead, either drop `--generate-notes` and add
@@ -55,6 +57,20 @@ wrong, and retries a transient failure instead of giving up immediately.
 - New interface text is English-only for now; other languages fall back until translated.
 
 Thanks to @Vikranttiw, whose report is the reason all of this exists.
+
+---
+
+## RelayPony Desktop v2.2.2
+
+Extends the Linux file-picker fix to the `.deb` and the portable tarball. The AppImage was fixed in
+2.2.0 and the AUR package shortly after, but the `.deb` and tarball kept shipping the unwrapped
+launcher; this build wraps them too. If you use the AppImage or the AUR package, nothing here changes
+for you.
+
+### Upgrading
+
+Nothing to do beyond installing the new build. Identities, pairings, and the transfer format are
+unchanged.
 
 ---
 

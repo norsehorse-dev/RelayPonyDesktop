@@ -24,10 +24,14 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y fakeroot desktop-file-utils
       - name: Build deb + portable tarball
         run: |
-          chmod +x gradlew
+          chmod +x gradlew packaging/linux/wrap-launcher.sh
           ./gradlew packageDeb createDistributable
-          cp build/compose/binaries/main/deb/relaypony_*_amd64.deb RelayPony-linux.deb
+          packaging/linux/wrap-launcher.sh build/compose/binaries/main/app/RelayPony
           tar -czf RelayPony-linux-x86_64.tar.gz -C build/compose/binaries/main/app RelayPony
+          dpkg-deb -R build/compose/binaries/main/deb/relaypony_*_amd64.deb deb-root
+          packaging/linux/wrap-launcher.sh deb-root/opt/relaypony
+          ( cd deb-root && find opt -type f -exec md5sum {} + > DEBIAN/md5sums )
+          fakeroot dpkg-deb -b deb-root RelayPony-linux.deb
       - name: Build AppImage
         run: |
           APPDIR=RelayPony.AppDir
@@ -61,10 +65,14 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y fakeroot desktop-file-utils
       - name: Build deb + portable tarball
         run: |
-          chmod +x gradlew
+          chmod +x gradlew packaging/linux/wrap-launcher.sh
           ./gradlew packageDeb createDistributable
-          cp build/compose/binaries/main/deb/relaypony_*_arm64.deb RelayPony-linux-arm64.deb
+          packaging/linux/wrap-launcher.sh build/compose/binaries/main/app/RelayPony
           tar -czf RelayPony-linux-aarch64.tar.gz -C build/compose/binaries/main/app RelayPony
+          dpkg-deb -R build/compose/binaries/main/deb/relaypony_*_arm64.deb deb-root
+          packaging/linux/wrap-launcher.sh deb-root/opt/relaypony
+          ( cd deb-root && find opt -type f -exec md5sum {} + > DEBIAN/md5sums )
+          fakeroot dpkg-deb -b deb-root RelayPony-linux-arm64.deb
       - name: Build AppImage
         run: |
           APPDIR=RelayPony.AppDir

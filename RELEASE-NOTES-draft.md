@@ -4,8 +4,8 @@ Two GitHub releases and one F-Droid changelog. The F-Droid one is already commit
 `fastlane/metadata/android/en-US/changelogs/2.txt` in the Android repo; it's reproduced at the bottom
 for reference.
 
-**Before tagging the desktop:** bump `packageVersion` in `build.gradle.kts` from `2.0.3` to `2.1.0`
-(RELEASING.md step one). The Android `versionCode`/`versionName` are already bumped to 2 / "2.0".
+**Before tagging the desktop:** bump `packageVersion` in `build.gradle.kts` to `2.2.0`
+(RELEASING.md step one). Already done in the tree for this release.
 
 Also worth deciding: `release.yml` passes `--generate-notes`, which builds notes from commit titles
 and overrides nothing. To use the text below instead, either drop `--generate-notes` and add
@@ -55,6 +55,34 @@ wrong, and retries a transient failure instead of giving up immediately.
 - New interface text is English-only for now; other languages fall back until translated.
 
 Thanks to @Vikranttiw, whose report is the reason all of this exists.
+
+---
+
+## RelayPony Desktop v2.2.0
+
+A Linux-only packaging fix. If 2.1.0 already works for you, there is nothing here you need.
+
+### The file picker no longer opens blank on Linux
+
+On some Linux setups, "Choose files to send" opened a window with no text and no file list, just bands
+of color that darkened as you moved the mouse, and the terminal filled with `error occurred in
+libfreetype`. Sending a file was impossible.
+
+This one was RelayPony's fault. The app ships a bundled Java runtime that carries an older libfreetype,
+and the file picker is the system's own GTK file chooser. Once GTK loaded into RelayPony's process, its
+text rendering used the bundled libfreetype instead of the system copy, the two versions disagreed on
+an internal call, and the whole dialog failed to draw. It hit only RelayPony, because only RelayPony
+pulled an old libfreetype into the same process as GTK.
+
+The AppImage and the `relaypony-bin` AUR package now launch with the system libfreetype preloaded, so
+the picker renders correctly. Nothing else changed.
+
+### Upgrading
+
+Nothing to do beyond installing the new build. Identities, pairings, and the transfer format are
+unchanged.
+
+Thanks to the tester who ran it from a terminal and sent the actual libfreetype warnings.
 
 ---
 

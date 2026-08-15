@@ -1,3 +1,8 @@
 #!/bin/sh
+# RelayPony bundles a jpackage Java runtime that ships its own, older libfreetype. On Linux the
+# file picker is AWT's native GTK chooser, and GTK's HarfBuzz otherwise binds to that stale copy
+# and fails to draw the dialog ("error occurred in libfreetype"). Preload the host's libfreetype,
+# whose ABI is backward compatible, so GTK and Java2D share one working copy.
 HERE="$(dirname "$(readlink -f "$0")")"
+export LD_PRELOAD="libfreetype.so.6${LD_PRELOAD:+:$LD_PRELOAD}"
 exec "$HERE/bin/RelayPony" "$@"

@@ -4,7 +4,7 @@ Two GitHub releases and one F-Droid changelog. The F-Droid one is already commit
 `fastlane/metadata/android/en-US/changelogs/2.txt` in the Android repo; it's reproduced at the bottom
 for reference.
 
-**Before tagging the desktop:** bump `packageVersion` in `build.gradle.kts` to `2.2.0`
+**Before tagging the desktop:** bump `packageVersion` in `build.gradle.kts` to `2.2.1`
 (RELEASING.md step one). Already done in the tree for this release.
 
 Also worth deciding: `release.yml` passes `--generate-notes`, which builds notes from commit titles
@@ -55,6 +55,19 @@ wrong, and retries a transient failure instead of giving up immediately.
 - New interface text is English-only for now; other languages fall back until translated.
 
 Thanks to @Vikranttiw, whose report is the reason all of this exists.
+
+---
+
+## RelayPony Desktop v2.2.1
+
+Finishes the Linux file-picker fix from 2.2.0. That release fixed the AppImage; this one extends the
+same libfreetype preload to the `.deb` and the portable tarball, which were still shipping the broken
+picker. If you run the AppImage, nothing here is new for you.
+
+### Upgrading
+
+Nothing to do beyond installing the new build. Identities, pairings, and the transfer format are
+unchanged.
 
 ---
 

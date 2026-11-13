@@ -53,7 +53,10 @@ sourceSets {
             srcDir(androidDir.resolve("crypto/src/main/kotlin"))
             srcDir(androidDir.resolve("transport/src/main/kotlin"))
             srcDir(androidDir.resolve("session/src/main/kotlin"))
-            srcDir(androidDir.resolve("pake/src/main/kotlin"))           // word codes: WordCodePairing + UniFFI bindings
+            // Word codes: only WordCodePairing from the Android pake module. Its UniFFI bindings are
+            // gitignored there (scripts/build-pake.sh makes them), so desktop generates its own below.
+            srcDir(androidDir.resolve("pake/src/main/kotlin/com"))
+            srcDir(layout.buildDirectory.dir("pake-kotlin"))
             exclude("**/NsdDiscovery.kt")
         }
         resources.srcDir(layout.buildDirectory.dir("pake-resources"))
@@ -108,6 +111,41 @@ val buildPake = tasks.register<Exec>("buildPake") {
         Files.copy(built.toPath(), pakeOutDir.resolve(pakeLibName).toPath(), StandardCopyOption.REPLACE_EXISTING)
     }
 }
+// UniFFI Kotlin bindings for pake-ffi. uniffi-bindgen reads metadata the release profile strips, so
+// they come from a host debug build of the same crate, as in Android's scripts/build-pake.sh.
+val pakeKotlinDir: File = layout.buildDirectory.dir("pake-kotlin").get().asFile
+val pakeRustFlags =
+    "--remap-path-prefix=${pakeDir.canonicalPath}=/relaypony-pake --remap-path-prefix=${System.getProperty("user.home")}=/home"
+val pakeHostDebug = tasks.register<Exec>("pakeHostDebug") {
+    description = "Builds a debug pake-ffi for this OS, for uniffi-bindgen to read."
+    workingDir = pakeDir
+    commandLine("cargo", "build", "--locked", "-p", "pake-ffi", "--target-dir", pakeTargetDir.path)
+    environment("PATH", cargoBin + File.pathSeparator + (System.getenv("PATH") ?: ""))
+    environment("RUSTFLAGS", pakeRustFlags)
+    outputs.upToDateWhen { false }
+}
+val pakeBindings = tasks.register<Exec>("pakeBindings") {
+    description = "Generates the UniFFI Kotlin bindings for pake-ffi into build/pake-kotlin."
+    dependsOn(pakeHostDebug)
+    workingDir = pakeDir
+    commandLine(
+        "cargo", "run", "-q", "--locked", "-p", "pake-ffi", "--features", "cli", "--bin", "uniffi-bindgen",
+        "--target-dir", pakeTargetDir.path, "--",
+        "generate", "--library", pakeTargetDir.resolve("debug/$pakeLibName").path,
+        "--language", "kotlin", "--no-format", "--out-dir", pakeKotlinDir.path,
+    )
+    environment("PATH", cargoBin + File.pathSeparator + (System.getenv("PATH") ?: ""))
+    environment("RUSTFLAGS", pakeRustFlags)
+    outputs.dir(pakeKotlinDir)
+    outputs.upToDateWhen { false }
+    doFirst { pakeKotlinDir.deleteRecursively(); pakeKotlinDir.mkdirs() }
+    doLast {
+        val kt = pakeKotlinDir.resolve("uniffi/relaypony_pake_ffi/relaypony_pake_ffi.kt")
+        if (!kt.isFile) throw GradleException("uniffi-bindgen finished but ${kt.path} is missing")
+    }
+}
+tasks.named("compileKotlin") { dependsOn(pakeBindings) }
+
 // The Android app's translated strings, read at run time underneath the desktop's own (see I18n.kt).
 val copyAndroidStrings = tasks.register<Sync>("copyAndroidStrings") {
     from(androidDir.resolve("app/src/main/res")) { include("values*/strings.xml") }

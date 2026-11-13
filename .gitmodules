@@ -1,0 +1,3 @@
+[submodule "RelayPonyAndroid"]
+	path = RelayPonyAndroid
+	url = https://github.com/norsehorse-dev/RelayPonyAndroid.git

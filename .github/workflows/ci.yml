@@ -75,8 +75,10 @@ jobs:
           mkdir -p /tmp/rx/inbox /tmp/tx /tmp/cfg-rx /tmp/cfg-tx
           echo "ci payload $(git rev-parse --short HEAD)" > /tmp/tx/ci.txt
 
+          # The two sides are fresh identities and never pair, and since 4.0 a receiver refuses
+          # unpaired senders by default, so this receiver opts in to test the transfer stack itself.
           XDG_CONFIG_HOME=/tmp/cfg-rx RELAYPONY_NAME=ci-receiver \
-            "$BIN" receive --dir /tmp/rx/inbox > /tmp/rx.log 2>&1 &
+            "$BIN" receive --dir /tmp/rx/inbox --accept-unpaired > /tmp/rx.log 2>&1 &
           RECEIVER=$!
           trap 'kill $RECEIVER 2>/dev/null || true' EXIT
 

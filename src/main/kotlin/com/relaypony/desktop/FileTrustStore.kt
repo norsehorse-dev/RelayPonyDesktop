@@ -30,16 +30,16 @@ class FileTrustStore(private val file: File) : TrustStore {
         }
     }
 
-    override fun pin(handle: String, name: String, nowMs: Long) {
+    @Synchronized override fun pin(handle: String, name: String, nowMs: Long) {
         require(handle.isNotEmpty()) { "cannot pin an empty handle" }
         byHandle[handle] = PinnedDevice(handle, name, nowMs)
         persist()
     }
 
-    override fun isPinned(handle: String): Boolean = byHandle.containsKey(handle)
-    override fun get(handle: String): PinnedDevice? = byHandle[handle]
-    override fun all(): List<PinnedDevice> = byHandle.values.toList()
-    override fun remove(handle: String) { byHandle.remove(handle); persist() }
+    @Synchronized override fun isPinned(handle: String): Boolean = byHandle.containsKey(handle)
+    @Synchronized override fun get(handle: String): PinnedDevice? = byHandle[handle]
+    @Synchronized override fun all(): List<PinnedDevice> = byHandle.values.toList()
+    @Synchronized override fun remove(handle: String) { byHandle.remove(handle); persist() }
 
     private fun persist() {
         file.parentFile?.mkdirs()

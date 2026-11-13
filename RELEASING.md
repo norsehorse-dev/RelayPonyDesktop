@@ -14,6 +14,10 @@ under exactly those names.
 
 Bump `packageVersion` in `build.gradle.kts` before tagging a new version.
 
+The protocol core comes from the `RelayPonyAndroid` submodule. Before tagging, check that its pin is
+the Android commit you mean to ship (`git submodule status`), and that a fresh clone builds:
+CI checks out submodules recursively, so an unpushed or stale pin fails there, not on your machine.
+
 ## Cutting a release
 
 ### 1. CI builds Linux + Windows and publishes (no secrets required)

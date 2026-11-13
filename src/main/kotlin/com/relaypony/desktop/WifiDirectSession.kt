@@ -79,7 +79,7 @@ object WifiDirectSession {
         return if (WifiIdent.resolveISend(mine, theirs)) {
             if (!Pairing.canSendOneTap(theirs.handle, trust)) {
                 throw IllegalStateException(
-                    "Not paired with ${theirs.deviceName}. Pair first — over Wi-Fi Direct there is " +
+                    "Not paired with ${theirs.deviceName}. Pair first. Over Wi-Fi Direct there is " +
                         "no QR exchange, so the pairing has to already exist."
                 )
             }

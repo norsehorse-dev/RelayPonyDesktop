@@ -79,9 +79,14 @@ class PeerFinder(private val selfHandle: String? = null) {
     }
 
     /** Announce ourselves on every mechanism. Returns the mDNS interfaces that accepted us. */
-    fun advertise(tcpPort: Int, deviceName: String, recipientHandle: String): List<String> {
-        beacon.advertise(tcpPort, deviceName, recipientHandle, WireProtocol.MAX_WIRE_VERSION)
-        return mdns.advertise("RelayPony-$tcpPort", tcpPort, deviceName, recipientHandle)
+    fun advertise(tcpPort: Int, deviceName: String, recipientHandle: String, pairCapable: Boolean = false): List<String> {
+        beacon.advertise(tcpPort, deviceName, recipientHandle, WireProtocol.MAX_WIRE_VERSION, pairCapable = pairCapable)
+        return mdns.advertise("RelayPony-$tcpPort", tcpPort, deviceName, recipientHandle, pairCapable = pairCapable)
+    }
+
+    /** One quick "anyone there?" over the beacon, without waiting out an mDNS browse. */
+    fun probe(timeoutMs: Long = 1500, onPeer: (DesktopDiscovery.Peer) -> Unit) {
+        beacon.probe(timeoutMs) { onPeer(it.toPeer()) }
     }
 
     fun stopAdvertising() {
@@ -112,6 +117,7 @@ class PeerFinder(private val selfHandle: String? = null) {
         maxWire = maxWire,
         source = "beacon",
         via = via,
+        pairCapable = pairCapable,
     )
 
     companion object {

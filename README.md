@@ -8,34 +8,42 @@
 Encrypted, direct device-to-device file transfer for **macOS, Linux, and Windows** — the desktop
 member of the [RelayPony](https://relaypony.app) family.
 
-RelayPony sends files straight between your devices over the local network, end-to-end encrypted
-with the [age](https://age-encryption.org) protocol. No server, no cloud, no account. The desktop
+RelayPony sends files straight between your devices, end-to-end encrypted with the
+[age](https://age-encryption.org) protocol: over the local network when they share one, and over the
+internet (peer to peer, with a relay that only sees ciphertext as the fallback) when they don't. No
+cloud storage, no account. The desktop
 app pairs with the RelayPony iOS and Android apps by QR code and moves files both ways; leave it
 running and your computer becomes a drop target for every paired device.
 
 ## Not a rewrite
 
-This app compiles the **exact** wire-protocol, session, and age-encryption code that the RelayPony
-Android app ships, plus the age core from AgePony. One tested implementation means guaranteed
-interop across every device you own, and far less code that could drift. The reused sources are
-vendored under [`vendor/`](vendor/) (Apache-2.0, from the RelayPonyAndroid and AgePonyAndroid
-repositories); only `com.relaypony.desktop` under [`src/`](src/) is desktop-specific — the Compose
-UI, the CLI, jmdns discovery, and the file-backed identity/trust stores.
+This app compiles the **exact** protocol code the RelayPony Android app ships: its crypto, transport
+and session modules, the age core from AgePony and the PonyDirect internet transport, all taken
+straight from the pinned [RelayPonyAndroid](https://github.com/norsehorse-dev/RelayPonyAndroid)
+submodule. One tested implementation means guaranteed interop across every device you own, and no
+copy that can drift. Only `com.relaypony.desktop` under [`src/`](src/) is desktop-specific: the
+Compose UI, the CLI, jmdns discovery, and the file-backed identity, trust and settings stores.
 
 ## Build & run
 
-Requires a JDK 17 or newer.
+Requires a JDK 17 or newer and [rustup](https://rustup.rs): the build compiles the word-code
+pairing core (RelayPonyPake, Rust) for your OS, using the toolchain the crate pins. Clone with the
+submodules:
 
 ```sh
+git clone --recursive https://github.com/norsehorse-dev/RelayPonyDesktop.git
 ./gradlew run                      # launch the GUI
-./gradlew run --args="devices"     # CLI: list nearby devices (also: receive, send, pair, selftest)
+./gradlew run --args="pair"        # CLI: pair with another device (also: devices, receive, send, doctor, selftest)
 ```
+
+An existing clone needs `git submodule update --init --recursive`. To build against another
+RelayPonyAndroid checkout, pass `-Prelaypony.androidDir=/path/to/RelayPonyAndroid`.
 
 ## Native installers
 
 ```sh
-./gradlew packageDmg               # macOS → build/compose/binaries/main/dmg/RelayPony-2.0.0.dmg
-./gradlew packageDeb               # Linux → build/compose/binaries/main/deb/relaypony_2.0.0_*.deb
+./gradlew packageDmg               # macOS → build/compose/binaries/main/dmg/RelayPony-4.0.0.dmg
+./gradlew packageDeb               # Linux → build/compose/binaries/main/deb/relaypony_4.0.0_*.deb
 ./gradlew packageDistributionForCurrentOS
 ```
 
@@ -44,8 +52,10 @@ jpackage builds an installer only for the OS it runs on, so build the `.dmg` on 
 
 ## Security
 
-Trust is keyed to each device's **age public key**, never its display name. Pairing is
-trust-on-first-use over a QR code (with a six-digit verification code), matching the phones. The
+Trust is keyed to each device's **age public key**, never its display name. Pairing is mutual: one
+device scans the other's QR code and both confirm the same eight-digit code, matching the phones.
+Only paired devices can send here unless you allow others in Settings, and each send carries a
+signed HELLO so another device can't pose as a paired one. The
 transfer is age (X25519 + ChaCha20-Poly1305) end to end. See the RelayPony protocol spec in the
 core repositories for the frozen, cipher-agnostic wire format.
 

@@ -114,7 +114,7 @@ class WifiDirectLinux {
         // Driver capability. This is the decisive test: wpa_supplicant enables P2P only when the
         // phy advertises BOTH of these interface modes.
         when (val modes = supportedInterfaceModes()) {
-            null -> notes.add("iw not installed — could not confirm driver P2P support in advance.")
+            null -> notes.add("iw not installed, so driver P2P support could not be confirmed in advance.")
             else -> {
                 val go = modes.any { it.equals("P2P-GO", ignoreCase = true) }
                 val client = modes.any { it.equals("P2P-client", ignoreCase = true) }
@@ -122,7 +122,7 @@ class WifiDirectLinux {
                     notes.add("driver advertises P2P-GO and P2P-client")
                 } else {
                     blockers.add(
-                        "This wireless driver does not support Wi-Fi Direct — 'iw list' does not " +
+                        "This wireless driver does not support Wi-Fi Direct: 'iw list' does not " +
                             "advertise ${if (!go) "P2P-GO" else ""}${if (!go && !client) " and " else ""}" +
                             "${if (!client) "P2P-client" else ""}. Nothing in software can work around that."
                     )
@@ -137,14 +137,14 @@ class WifiDirectLinux {
             when {
                 reply.equals("OK", ignoreCase = true) -> notes.add("wpa_supplicant accepted p2p_find")
                 reply.contains("UNKNOWN COMMAND") ->
-                    blockers.add("This wpa_supplicant was built without CONFIG_P2P — Wi-Fi Direct is unavailable.")
+                    blockers.add("This wpa_supplicant was built without CONFIG_P2P, so Wi-Fi Direct is unavailable.")
                 reply.startsWith("FAIL") ->
                     blockers.add(
                         "wpa_supplicant refused p2p_find. Usually the driver isn't P2P-capable, " +
                             "p2p_disabled=1 is set, or Wi-Fi is rfkill'd (check: rfkill list)."
                     )
                 reply.isEmpty() ->
-                    blockers.add("No reply from wpa_supplicant — is the control socket readable by this user?")
+                    blockers.add("No reply from wpa_supplicant. Is the control socket readable by this user?")
                 else -> notes.add("p2p_find replied: $reply")
             }
             wpa("p2p_stop_find")
@@ -270,8 +270,8 @@ class WifiDirectLinux {
                     // network it's already joined to, and no other strategy will change that.
                     throw P2pException(
                         "The radio can't use the channel this group needs ($reply). This usually " +
-                            "means it is already joined to a Wi-Fi network on a different channel — " +
-                            "disconnect Wi-Fi and try again."
+                            "means it is already joined to a Wi-Fi network on a different channel. " +
+                            "Disconnect Wi-Fi and try again."
                     )
                 }
                 continue
@@ -288,20 +288,20 @@ class WifiDirectLinux {
         // request. Pre-authorising the peer means an incoming negotiation is accepted with no
         // prompt on this side, so the whole interaction happens where the user already is.
         onStatus(
-            "No response to our invitation. Now waiting for the phone to start it instead — " +
+            "No response to our invitation. Now waiting for the phone to start it instead: " +
                 "on the phone, tap Find devices under Connect directly, then tap this computer."
         )
         awaitInbound(deviceAddress, INBOUND_WAIT_MS)?.let { return it }
 
         throw P2pException(
             "Could not form a group ($lastProblem). If this machine is joined to a 5 GHz Wi-Fi " +
-                "network, disconnect it first — a single-radio adapter cannot run a P2P group on a " +
+                "network, disconnect it first. A single-radio adapter cannot run a P2P group on a " +
                 "different channel than the one the station is using. On the phone: open RelayPony, tap \"Find " +
                 "devices\" under Connect directly so it is actively discovering, tap \"Arm " +
                 "receive\" on the Receive tab, keep the screen on, and accept the \"Invitation to " +
                 "connect\" prompt when it appears, or tap this computer in the phone's own device " +
                 "list. The prompt is shown by Android itself, not by RelayPony, and some builds " +
-                "never raise it for an incoming request at all — starting from the phone is the " +
+                "never raise it for an incoming request at all, so starting from the phone is the " +
                 "reliable direction."
         )
     }
@@ -342,7 +342,7 @@ class WifiDirectLinux {
                 note(
                     "WARNING: the Wi-Fi connection is on 5 GHz. Most single-radio adapters can only " +
                         "put a P2P group on the channel the station is already using, and phones " +
-                        "negotiate on 2.4 GHz social channels — so group formation usually fails " +
+                        "negotiate on 2.4 GHz social channels, so group formation usually fails " +
                         "until Wi-Fi is disconnected."
                 )
             }
@@ -350,7 +350,7 @@ class WifiDirectLinux {
 
         val known = wpa("p2p_peers").lines().any { it.trim().equals(deviceAddress, ignoreCase = true) }
         if (!known) {
-            note("$deviceAddress not in wpa_supplicant's peer table — refreshing discovery")
+            note("$deviceAddress not in wpa_supplicant's peer table, refreshing discovery")
             wpa("p2p_find", REFRESH_SECONDS.toString(), "type=social")
             Thread.sleep(REFRESH_WAIT_MS)
         }
@@ -436,7 +436,7 @@ class WifiDirectLinux {
             if (which("dnsmasq") == null) {
                 throw P2pException(
                     "This machine became the group owner, which means it has to hand the phone an " +
-                        "address, and dnsmasq isn't installed. Install dnsmasq, or retry — " +
+                        "address, and dnsmasq isn't installed. Install dnsmasq, or retry: " +
                         "RelayPony asks for go_intent=0 so the phone normally owns the group."
                 )
             }
@@ -620,7 +620,7 @@ class WifiDirectLinux {
         val unreadable = dirs.filterNot { it.canRead() }
         if (unreadable.size == dirs.size) {
             val dir = unreadable.first()
-            return "${dir.path} exists but this user cannot read it — wpa_supplicant is creating " +
+            return "${dir.path} exists but this user cannot read it. wpa_supplicant is creating " +
                 "the socket, this account just has no access to it. The directory is normally owned " +
                 "by the 'netdev' group: run 'sudo usermod -aG netdev \$USER', then log out and back " +
                 "in. (Check with: ls -ld ${dir.path})"

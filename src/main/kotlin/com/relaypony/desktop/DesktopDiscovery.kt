@@ -39,6 +39,8 @@ class DesktopDiscovery {
         val source: String = "mDNS",
         /** The interface it was heard on, where we know it. */
         val via: String = "",
+        /** The peer accepts a PAIR frame on its transfer port (4.0: "pr" = "1", or the beacon flag). */
+        val pairCapable: Boolean = false,
     )
 
     /** What we bound, what we skipped, and anything that went wrong doing it. */
@@ -65,7 +67,7 @@ class DesktopDiscovery {
                 .onFailure { problems.add("mDNS bind failed on ${endpoint.ifaceName} (${endpoint.ip}): ${reason(it)}") }
         }
         if (made.isEmpty() && problems.isEmpty()) {
-            problems.add("No usable network interface found — is Wi-Fi or ethernet connected?")
+            problems.add("No usable network interface found. Is Wi-Fi or ethernet connected?")
         }
         bound = made
         return made
@@ -84,12 +86,19 @@ class DesktopDiscovery {
      * actually succeeded on — an empty list means nobody can discover us, which callers should say
      * out loud rather than swallow.
      */
-    fun advertise(instanceName: String, port: Int, deviceName: String, recipientHandle: String): List<String> {
-        val props = mapOf(
-            "name" to deviceName,
-            "rcpt" to recipientHandle,
-            "mw" to WireProtocol.MAX_WIRE_VERSION.toString(),
-        )
+    fun advertise(
+        instanceName: String,
+        port: Int,
+        deviceName: String,
+        recipientHandle: String,
+        pairCapable: Boolean = false,
+    ): List<String> {
+        val props = buildMap {
+            put("name", deviceName)
+            put("rcpt", recipientHandle)
+            put(WireProtocol.MW_KEY, WireProtocol.MAX_WIRE_VERSION.toString())
+            if (pairCapable) put(WireProtocol.PR_KEY, "1")
+        }
         val ok = ArrayList<String>()
         for (b in instances()) {
             // A ServiceInfo is stateful and gets bound to the JmDNS that registers it, so each
@@ -120,7 +129,8 @@ class DesktopDiscovery {
                         val host = bestHost(info, endpoint) ?: return
                         val name = info.getPropertyString("name") ?: event.name
                         val mw = info.getPropertyString("mw")?.toIntOrNull()?.let { if (it >= 1) it else 1 } ?: 1
-                        onPeer(Peer(name, host, info.port, rcpt, mw))
+                        val pr = info.getPropertyString(WireProtocol.PR_KEY) == "1"
+                        onPeer(Peer(name, host, info.port, rcpt, mw, pairCapable = pr))
                     }
                 })
             }.onFailure { problems.add("Browse failed on ${endpoint.ifaceName}: ${reason(it)}") }

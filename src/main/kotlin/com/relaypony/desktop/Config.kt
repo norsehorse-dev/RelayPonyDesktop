@@ -23,6 +23,7 @@ object Config {
     val identityFile: File = File(configDir, "identity")
     val trustFile: File = File(configDir, "trust.json")
     val nameFile: File = File(configDir, "name")
+    val themeFile: File = File(configDir, "theme")
 
     /**
      * The port we prefer to listen on. It used to be whatever the OS handed out, which meant the
@@ -58,6 +59,19 @@ object Config {
         runCatching {
             configDir.mkdirs()
             nameFile.writeText(clean)
+        }
+    }
+
+    /** The saved appearance choice; "match system" when nothing (or something unknown) is saved. */
+    fun loadTheme(): ThemeMode =
+        runCatching { themeFile.takeIf { it.exists() }?.readText()?.trim()?.let { ThemeMode.valueOf(it) } }
+            .getOrNull() ?: ThemeMode.SYSTEM
+
+    /** Persist the appearance choice from Settings. Best-effort. */
+    fun saveTheme(mode: ThemeMode) {
+        runCatching {
+            configDir.mkdirs()
+            themeFile.writeText(mode.name)
         }
     }
 

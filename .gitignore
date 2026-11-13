@@ -15,3 +15,5 @@ local.properties
 /RelayPony-*.msi
 /RelayPony-*.tar.gz
 /RelayPony-*.AppImage
+.kotlin/
+/relaypony-bin/

@@ -4,13 +4,22 @@ import com.relaypony.crypto.AgeProvider
 import com.relaypony.session.FileNames
 import com.relaypony.session.OutgoingFile
 import com.relaypony.session.SocketTransfer
-import com.relaypony.session.pairing.QrPayload
-import com.relaypony.session.pairing.Sas
+import com.relaypony.session.HelloAuth
+import com.relaypony.session.RefusedException
+import com.relaypony.session.TransferLimits
+import com.relaypony.session.pairing.LanPair
+import com.relaypony.session.pairing.PairingFlow
+import com.relaypony.session.pairing.PairingService
+import com.relaypony.session.pairing.SasV2
+import com.relaypony.session.wan.RelayClient
+import com.relaypony.session.wan.RelayUrls
 import com.relaypony.transport.LocalInterfaces
 import com.relaypony.transport.WireProtocol
 import java.io.File
 import java.io.FileInputStream
 import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * relaypony — the desktop CLI (Linux · Windows · macOS), reusing the exact wire/session/crypto the
@@ -23,9 +32,10 @@ fun main(args: Array<String>) {
         "devices" -> cmdDevices()
         "receive" -> cmdReceive(args.drop(1))
         "send" -> cmdSend(args.drop(1))
-        "pair" -> cmdPair()
+        "pair" -> cmdPair(args.drop(1))
         "selftest" -> cmdSelftest()
         "doctor" -> cmdDoctor()
+        "relay-check" -> cmdRelayCheck()
         "p2p" -> cmdP2p(args.drop(1))
         else -> usage()
     }
@@ -134,7 +144,7 @@ private fun p2pTransfer(args: List<String>) {
             readiness.blockers.forEach { println("  ! $it") }
             return
         }
-        println("Connecting to $peerMac — accept the invitation on the phone…")
+        println("Connecting to $peerMac. Accept the invitation on the phone…")
         val group = p2p.connect(peerMac) { println("  $it") }
         println("Group up on ${group.iface} (${if (group.isGroupOwner) "we own it" else "phone owns it"}).")
 
@@ -176,19 +186,24 @@ private fun p2pTransfer(args: List<String>) {
 private fun usage() {
     println(
         """
-        relaypony — encrypted device-to-device file transfer (desktop)
+        relaypony: encrypted device-to-device file transfer (desktop)
 
         Usage: relaypony <command>
 
           gui                      Open the graphical app (also opens when run with no command)
-          receive [--dir <path>]   Receive files here; prints a pairing QR for phones to scan
+          receive [--dir <path>]   Receive files here from paired devices
                   [--port <n>]     Listen on a specific port (default ${Config.DEFAULT_PORT})
+                  [--accept-unpaired]  Also take files from devices that aren't paired
           send <files…> --to <n>   Send files to a paired device (by name or handle)
                   [--host <addr>]  Skip discovery and connect straight to an address
                   [--port <n>]     Port for --host (default ${Config.DEFAULT_PORT})
-          pair                     Pair with a nearby device (compare the verification code)
+          pair                     Pair with another device: shows a QR to scan, then a code to compare
+                  [--code <text>]  Use the other device's pairing code instead
+                  [--words]        Show a word code for the other device to type
+                  [--word-code <code>] [--relay <url>]  Pair with a word code from the other device
           devices                  Discover nearby RelayPony devices on your network
           doctor                   Explain this machine's networking and what discovery can reach
+          relay-check              Test every relay call internet transfers make, from this computer
           p2p <check|find|send>    Wi-Fi Direct: talk to a phone with no network at all (Linux)
           selftest                 Verify the crypto + wire stack runs on this JVM
 
@@ -196,7 +211,7 @@ private fun usage() {
                      RELAYPONY_IFACE (comma-separated interfaces to use, e.g. wlan0)
 
         Devices are found three ways at once: mDNS, a UDP broadcast beacon that survives
-        networks mDNS doesn't, and — via `doctor` — a scan of the local subnet. If none of
+        networks mDNS doesn't, and (via `doctor`) a scan of the local subnet. If none of
         them get through, `send --host <ip>` skips discovery entirely, and `p2p` needs no
         network at all.
         """.trimIndent()
@@ -219,7 +234,7 @@ private fun cmdDoctor() {
     val endpoints = LocalNet.endpoints()
     println("\nInterfaces mDNS will use")
     if (endpoints.isEmpty()) {
-        println("  (none — no connected, multicast-capable interface with an IPv4 address)")
+        println("  (none: no connected, multicast-capable interface with an IPv4 address)")
     } else {
         endpoints.forEach { println("  • $it") }
     }
@@ -227,11 +242,11 @@ private fun cmdDoctor() {
     val skipped = LocalNet.skipped()
     if (skipped.isNotEmpty()) {
         println("\nInterfaces skipped")
-        skipped.forEach { println("  · ${it.ifaceName} — ${it.reason}") }
+        skipped.forEach { println("  · ${it.ifaceName}: ${it.reason}") }
     }
 
     println("\nReach this machine at")
-    if (endpoints.isEmpty()) println("  (nowhere — connect to a network first)")
+    if (endpoints.isEmpty()) println("  (nowhere: connect to a network first)")
     else LocalNet.reachableAt(port).forEach { println("  • $it") }
 
     val gateways = LocalInterfaces.defaultGateways().mapNotNull { it.hostAddress }
@@ -242,7 +257,7 @@ private fun cmdDoctor() {
     }
 
     val finder = PeerFinder()
-    println("\nSearching — mDNS browse and beacon probe (~6s)…")
+    println("\nSearching: mDNS browse and beacon probe (~6s)…")
     val found = finder.findOnce(6000).associateByTo(LinkedHashMap()) { it.recipientHandle }
     val diag = finder.diagnostics()
 
@@ -258,7 +273,7 @@ private fun cmdDoctor() {
     found.values.forEach { p ->
         val reachable = if (LocalNet.probe(p.host, p.port)) "reachable" else "NOT reachable"
         val via = if (p.via.isNotEmpty()) " via ${p.via}" else ""
-        println("  • ${p.name}  ${p.host}:${p.port}  wire v${p.maxWire}  [${p.source}$via] — $reachable")
+        println("  • ${p.name}  ${p.host}:${p.port}  wire v${p.maxWire}  [${p.source}$via]  $reachable")
         println("      ${p.recipientHandle}")
     }
 
@@ -328,31 +343,37 @@ private fun cmdReceive(args: List<String>) {
     val provider = AgeProvider()
     val identity = FileIdentityStore(Config.identityFile).loadOrCreate(provider)
     val handle = String(provider.recipientToQr(provider.recipientOf(identity)), Charsets.UTF_8)
-    val name = Config.deviceName
+    val myScalar = provider.scalarOf(identity)
+    val trust = FileTrustStore(Config.trustFile)
+    val settings = DesktopSettings()
+    val name = Config.loadName()
     val inbox = parseDir(args) ?: Config.defaultInbox()
+    val acceptUnpaired = "--accept-unpaired" in args || settings.acceptUnpaired
 
-    val qr = QrPayload(QrPayload.CURRENT_VERSION, provider.schemeId, handle, name).encode()
-    println("Scan this on a phone to pair, then send to \"$name\":")
-    TerminalQr.print(qr)
     println("Device:  $name")
     println("Handle:  $handle")
     println("Saving to: ${inbox.absolutePath}")
+    println(
+        if (acceptUnpaired) "Accepting files from any device on this network."
+        else "Accepting files from paired devices only. Pair one with `relaypony pair`."
+    )
 
     val wanted = optionValue(args, "--port")?.toIntOrNull() ?: Config.listenPort
     val server = LocalNet.listen(wanted)
     val port = server.localPort
     if (wanted > 0 && port != wanted) {
-        println("\nPort $wanted was busy — listening on $port instead.")
+        println("\nPort $wanted was busy, so this is listening on $port instead.")
     }
 
+    // Not pair-capable: this command doesn't take pairing messages, so peers shouldn't send them here.
     val finder = PeerFinder(handle)
-    val advertisedOn = finder.advertise(port, name, handle)
+    val advertisedOn = finder.advertise(port, name, handle, pairCapable = false)
     finder.start { }                       // listen so probes from other devices get answered
     val diag = finder.diagnostics()
 
     println()
     if (advertisedOn.isEmpty()) {
-        System.err.println("! mDNS could not advertise on any interface — the UDP beacon is still")
+        System.err.println("! mDNS could not advertise on any interface. The UDP beacon is still")
         System.err.println("!   running, so newer builds can still find you.")
         diag.problems.forEach { System.err.println("!   $it") }
         System.err.println("!   Run `relaypony doctor` for the full picture.")
@@ -364,28 +385,54 @@ private fun cmdReceive(args: List<String>) {
     val reachable = LocalNet.reachableAt(port)
     if (reachable.isEmpty()) println("  (no connected network interface)")
     else reachable.forEach { println("  • $it") }
-    println("  If the phone can't find you, send from another computer with:")
+    println("  If the other device can't find you, send from another computer with:")
     println("    relaypony send <file> --to \"$name\" --host <one of the addresses above> --port $port")
 
-    println("\nListening on port $port — Ctrl-C to stop.\n")
+    println("\nListening on port $port. Ctrl-C to stop.\n")
 
     Runtime.getRuntime().addShutdownHook(Thread {
         runCatching { finder.close() }
         runCatching { server.close() }
     })
 
+    // Paired-only receive (PROTOCOL_v3 section 9.2), the same rule as the GUI and the phones.
+    val seenTags = HashMap<String, Long>()
+    val gate: (WireProtocol.Hello) -> String? = gate@{ hello ->
+        val from = hello.recipientHandle
+        val pinned = trust.isPinned(from)
+        val auth = hello.auth
+        val now = System.currentTimeMillis()
+        if (pinned && auth != null) {
+            val key = auth.tag.joinToString("") { "%02x".format(it) }
+            seenTags.entries.removeAll { now - it.value > 20 * 60 * 1000L }
+            if (HelloAuth.verify(myScalar, handle, from, auth, now) && seenTags.put(key, now) == null) {
+                settings.markTaggedPeer(from)
+                return@gate null
+            }
+        } else {
+            if (pinned && !settings.isTaggedPeer(from)) return@gate null
+            if (!pinned && acceptUnpaired) return@gate null
+        }
+        System.err.println("Refused files from \"${hello.deviceName.take(64)}\": it isn't paired with this computer.")
+        "unpaired"
+    }
+
     while (!server.isClosed) {
         val written = LinkedHashMap<String, File>()   // manifest name -> destination file
         try {
-            val result = SocketTransfer.receiveOnceFrom(
+            val result = SocketTransfer.acceptOne(
                 server, provider, identity,
+                onPair = { },
                 deviceName = name, recipientHandle = handle,
+                limits = TransferLimits(freeBytes = { inbox.usableSpace }),
+                gate = gate,
             ) { entry ->
                 val dest = uniqueFile(inbox, FileNames.sanitize(entry.name))
                 written[entry.name] = dest
                 dest.outputStream()
-            }
-            println("Received ${result.manifest.files.size} file(s) from ${result.senderName}:")
+            } ?: continue
+            val from = trust.get(result.senderHandle)?.name ?: "${result.senderName} (not paired)"
+            println("Received ${result.manifest.files.size} file(s) from $from:")
             for (f in result.manifest.files) {
                 val dest = written[f.name]
                 if (dest != null && dest.exists()) {
@@ -395,7 +442,10 @@ private fun cmdReceive(args: List<String>) {
                 }
             }
             println()
+        } catch (e: RefusedException) {
+            continue
         } catch (e: Exception) {
+            written.values.forEach { runCatching { it.delete() } }
             if (server.isClosed) break
             System.err.println("Transfer failed: ${e.message}")
         }
@@ -408,41 +458,135 @@ private fun cmdSelftest() {
     val identity = provider.generateIdentity()
     val handle = String(provider.recipientToQr(provider.recipientOf(identity)), Charsets.UTF_8)
     println("Generated identity: $handle")
-    println(if (handle.startsWith("age1")) "OK — crypto + wire + session run on this JVM." else "Unexpected handle.")
+    println(if (handle.startsWith("age1")) "OK: crypto + wire + session run on this JVM." else "Unexpected handle.")
 }
 
-/** Pair with nearby unpaired devices: show each one's verification code and pin on confirmation. */
-private fun cmdPair() {
+/**
+ * Pair with another device (PROTOCOL_v3 sections 3 and 4). With no arguments this prints a QR for
+ * the other device to scan, then asks you to compare the code both show. With `--code <text>` it
+ * uses the other device's pairing code instead (the text of its QR).
+ */
+private fun cmdPair(args: List<String>) {
+    if ("--words" in args || optionValue(args, "--word-code") != null) {
+        cmdPairWords(showCode = "--words" in args, code = optionValue(args, "--word-code"), relayArg = optionValue(args, "--relay"))
+        return
+    }
     val provider = AgeProvider()
     val identity = FileIdentityStore(Config.identityFile).loadOrCreate(provider)
     val myHandle = String(provider.recipientToQr(provider.recipientOf(identity)), Charsets.UTF_8)
+    val myScalar = provider.scalarOf(identity)
     val trust = FileTrustStore(Config.trustFile)
-
+    val routes = FilePeerRouteStore()
+    val settings = DesktopSettings()
+    val name = Config.loadName()
+    val myRelay = RelayUrls.normalize(settings.relayServer)
+    val relay = RelayClient(RelayUrls.base(myRelay))
+    val main = ExecutorMainThread()
     val finder = PeerFinder(myHandle)
-    println("Looking for nearby devices to pair (~5s)…")
-    println("(open the Receive tab on the phone so it advertises)")
-    val seen = finder.findOnce(5000)
-        .filterNot { trust.isPinned(it.recipientHandle) }
-        .associateByTo(LinkedHashMap()) { it.recipientHandle }
-    finder.close()
+    val done = CountDownLatch(1)
+    var exitCode = 1
 
-    if (seen.isEmpty()) { println("No new devices found (already-paired ones are skipped)."); return }
-    for (p in seen.values) {
-        val sas = Sas.code(myHandle, p.recipientHandle)
-        println()
-        println("Pair with \"${p.name}\"?")
-        println("  handle:            ${p.recipientHandle}")
-        println("  verification code: $sas")
-        println("  Confirm this matches the six digits shown on ${p.name}.")
-        print("  Pair? [y/N] ")
-        val ans = readlnOrNull()?.trim()?.lowercase()
-        if (ans == "y" || ans == "yes") {
-            trust.pin(p.recipientHandle, p.name)
-            println("  Paired with ${p.name}.")
-        } else {
-            println("  Skipped.")
+    val service = PairingService(
+        provider = provider,
+        identity = identity,
+        myScalar = myScalar,
+        myHandle = myHandle,
+        myName = { name },
+        myInbox = { settings.inboxId },
+        myRelay = { myRelay },
+        trust = trust,
+        routes = routes,
+        mailer = { peer, r, inboxId, payload ->
+            Thread { runCatching { RelayClient(RelayUrls.base(r)).mboxSend(inboxId, payload) } }.apply { isDaemon = true; start() }
+            Thread {
+                runCatching {
+                    finder.probe(1500) { p ->
+                        if (p.recipientHandle == peer && p.pairCapable) runCatching { LanPair.send(p.host, p.port, payload) }
+                    }
+                }
+            }.apply { isDaemon = true; start() }
+        },
+    )
+    service.onEvent = { ev ->
+        when (ev) {
+            is PairingService.Event.Request -> {
+                println()
+                println("\"${ev.pending.request.name.take(64)}\" wants to pair.")
+                println("  Code: ${SasV2.display(ev.pending.code)}")
+                print("  Does the other device show the same code? [y/N] ")
+                val ans = readlnOrNull()?.trim()?.lowercase()
+                val yes = ans == "y" || ans == "yes"
+                service.confirm(ev.pending, yes)
+                if (!yes) { println("  Cancelled."); done.countDown() }
+            }
+            is PairingService.Event.Waiting -> {
+                println("Code: ${SasV2.display(ev.code)}")
+                println("Confirm on ${ev.name} if it shows the same code. Waiting…")
+            }
+            is PairingService.Event.Paired -> { println("Paired with ${ev.name}."); exitCode = 0; done.countDown() }
+            is PairingService.Event.PairedOneWay -> {
+                println("Paired with ${ev.name}. It runs an older RelayPony, so pair from that device too.")
+                exitCode = 0; done.countDown()
+            }
+            is PairingService.Event.Declined -> { println("The other device cancelled."); done.countDown() }
+            is PairingService.Event.Unpaired -> println("${ev.name} unpaired this computer.")
+            is PairingService.Event.RouteUpdated -> Unit
         }
     }
+
+    // The LAN listener takes PAIR frames only; every transfer is refused while pairing.
+    val server = runCatching { LocalNet.listen(Config.listenPort) }.getOrNull()
+    if (server != null) {
+        finder.advertise(server.localPort, name, myHandle, pairCapable = true)
+        Thread {
+            while (!server.isClosed) {
+                runCatching {
+                    SocketTransfer.acceptOne(
+                        server, provider, identity,
+                        onPair = { sealed -> main.post { service.onLanPair(sealed) } },
+                        gate = { "pairing" },
+                    ) { throw java.io.IOException("not receiving") }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+    }
+    finder.start { }
+
+    // The relay copy: poll this device's inbox.
+    Thread {
+        val mailboxes = relay.info()?.hasMailboxes == true
+        if (!mailboxes) System.err.println("(The relay has no private inboxes, so pairing works over this network only.)")
+        while (mailboxes && done.count > 0) {
+            runCatching { relay.mboxPoll(settings.inboxId) }.getOrNull()?.forEach { blob ->
+                main.post { service.open(blob)?.let { service.onSealedPlain(it) } }
+            }
+            Thread.sleep(2000)
+        }
+    }.apply { isDaemon = true; start() }
+
+    val code = optionValue(args, "--code")
+    main.post {
+        if (code != null) {
+            try {
+                service.onScanned(code)
+            } catch (e: IllegalArgumentException) {
+                println(if (code.contains(myHandle)) "That's this computer's own code." else "That isn't a RelayPony pairing code.")
+                done.countDown()
+            }
+        } else {
+            val qr = service.showQr()
+            println("Scan this with RelayPony on the other device:")
+            TerminalQr.print(qr.encode())
+            println("Or, on another computer: relaypony pair --code '${qr.encode()}'")
+            println("The code is good for five minutes. Waiting…")
+        }
+    }
+
+    if (!done.await(PairingFlow.VALIDITY_MS + 30_000, TimeUnit.MILLISECONDS)) println("Nothing arrived in time. Run `relaypony pair` again.")
+    runCatching { server?.close() }
+    runCatching { finder.close() }
+    main.shutdown()
+    if (exitCode != 0) kotlin.system.exitProcess(exitCode)
 }
 
 /**
@@ -486,13 +630,19 @@ private fun cmdSend(args: List<String>) {
     println("Sending ${files.size} file(s) ($total bytes) to ${target.name} at ${target.host}:${target.port}…")
     try {
         SocketTransfer.sendTo(
-            target.host, target.port, provider, listOf(recipient), Config.deviceName, myHandle, outgoing,
+            target.host, target.port, provider, listOf(recipient), Config.loadName(), myHandle, outgoing,
             peerMaxWire = target.maxWire,
+            // The signed HELLO (PROTOCOL_v3 section 9.1): a 4.0 receiver takes paired senders by it.
+            helloAuth = HelloAuth.signer(provider.scalarOf(identity), myHandle, target.recipientHandle),
         ) { sent, tot ->
             val pct = if (tot > 0) sent * 100 / tot else 100
             print("\r  $pct%   ")
         }
         println("\rSent ${files.size} file(s) to ${target.name}.   ")
+    } catch (e: RefusedException) {
+        println()
+        System.err.println("${target.name} refused the files: it doesn't have this computer paired.")
+        System.err.println("  Pair them with `relaypony pair`, then send again.")
     } catch (e: Exception) {
         println()
         System.err.println("Send failed: ${e.message}")
@@ -555,7 +705,7 @@ private fun manualTarget(
         return null
     }
     if (pinned == null) {
-        println("Note: $handle isn't paired — sending to the key you supplied on the command line.")
+        println("Note: $handle isn't paired. Sending to the key you supplied on the command line.")
     }
 
     // We can't ask an undiscovered peer what it speaks, so use v1: the frozen, always-compatible
@@ -576,7 +726,7 @@ private fun optionValue(args: List<String>, opt: String): String? {
     return args.firstOrNull { it.startsWith("$opt=") }?.substringAfter("=")
 }
 
-private fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+internal fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
     "jpg", "jpeg" -> "image/jpeg"
     "png" -> "image/png"
     "gif" -> "image/gif"
